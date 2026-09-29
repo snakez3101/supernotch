@@ -2,7 +2,8 @@
 //
 //  * Events: the distributed notification `com.spotify.client.PlaybackStateChanged` plus NSWorkspace launch /
 //    terminate / wake. Nothing polls.
-//  * State: ONE batched AppleScript (`SpotifyScriptParser.statusScript`) on a dedicated serial background queue.
+//  * State: ONE batched AppleScript (`SpotifyScriptParser.statusScript`, or `coreStatusScript` when this Spotify
+//    build cannot run the full one) on a dedicated serial background queue.
 //  * Commands: playpause, next, previous, set player position.
 //  * Always checks that Spotify is running first; a bare `tell application` would launch it.
 //  * Automation permission (TCC) is read silently (`askUser: false`) and only prompts on explicit request.

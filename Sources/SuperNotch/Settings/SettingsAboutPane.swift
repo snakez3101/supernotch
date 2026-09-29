@@ -99,10 +99,12 @@ struct SettingsAboutPane: View {
         openURL(url)
     }
 
+    /// Shown when the bundled NOTICE is missing (e.g. `swift run`). Keep in sync with the NOTICE file.
     private static let fallbackNotice =
         "SuperNotch is licensed under the Apache License 2.0. It contains code adapted from DynamicNotchKit "
-        + "(MIT, Kai Azim), NotchDrop (MIT, Lakr Aream) and Claude Island (Apache-2.0). The full notices are "
-        + "in the NOTICE file."
+        + "(MIT, © 2025 Kai Azim), NotchDrop (MIT, © 2024 Lakr Aream), Claude Island (Apache-2.0, © 2025 "
+        + "Farouq Aldori) and Maccy (MIT, © 2025 Alex Rodionov). The full notices and licence texts are in "
+        + "the NOTICE file."
 
     /// NOTICE shipped in the app bundle, if the packaging script copied it.
     private static func loadBundledNotice() -> String? {

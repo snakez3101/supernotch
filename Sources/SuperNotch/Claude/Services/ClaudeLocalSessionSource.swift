@@ -5,8 +5,8 @@
 // * Liveness: one kqueue process-exit source per claude PID (no polling), plus a start-time check against
 //   PID reuse when the source is created. `<config>/sessions/` removals are a second exit hint.
 // * `.tick` for the store's watchdog (stale rows, parked Desktop rows, title grace, hidden-session cleanup):
-//   every 30 s while a session is 🟡/🔴, every 2 min while only 🟢/idle/hidden sessions exist, never without
-//   sessions. Paused while the Mac sleeps or the screen is locked.
+//   about every 30 s (with timer tolerance) while any session exists, including hidden and parked ones; never
+//   without sessions. Paused while the Mac sleeps or the screen is locked.
 // * `claude agents --json --all` (SPEC §E.3): once shortly after launch and after wake/unlock (adopts sessions
 //   that started while nothing was listening; headless and internal PIDs are dropped first), and as a slow
 //   drift fallback while a 🟡/🔴 session has been silent for ≥ 60 s (backoff up to 5 min). Gives up after 3
@@ -43,7 +43,6 @@ final class ClaudeLocalSessionSource: SessionSource {
     private var exitWatchers: [Int32: ClaudeProcessExitWatcher] = [:]
     private var knownSessions: [Session] = []
     private var tickTask: Task<Void, Never>?
-    private var tickInterval: TimeInterval = 0
     private var launchPollTask: Task<Void, Never>?
     private var isPaused = false
 
@@ -54,8 +53,7 @@ final class ClaudeLocalSessionSource: SessionSource {
     private var lastAgentsPoll: Date?
     private var agentsInterval: TimeInterval = ClaudeLocalSessionSource.minAgentsInterval
 
-    nonisolated static let activeTickInterval: TimeInterval = 30
-    nonisolated static let idleTickInterval: TimeInterval = 120
+    nonisolated static let tickInterval: TimeInterval = 30
     nonisolated static let launchPollDelay: TimeInterval = 3
     nonisolated static let silenceBeforeAgentsPoll: TimeInterval = 60
     nonisolated static let minAgentsInterval: TimeInterval = 60
@@ -248,29 +246,17 @@ final class ClaudeLocalSessionSource: SessionSource {
         knownSessions.contains { $0.isVisible && ($0.phase == .working || $0.phase.isNeedsInput) }
     }
 
-    private var desiredTickInterval: TimeInterval {
-        guard !isPaused, sink != nil, !knownSessions.isEmpty else { return 0 }
-        return hasActiveWork ? Self.activeTickInterval : Self.idleTickInterval
-    }
-
-    /// Starts, stops or re-paces the tick loop. A shorter interval restarts it; a longer one is picked up by
-    /// the running loop after its current sleep (so frequent 🟡 ⇄ 🟢 flips never postpone ticks).
+    /// One tick loop while any session exists and the Mac is awake and unlocked.
     private func updateTickTimer() {
-        let wanted = desiredTickInterval
-        guard wanted > 0 else {
+        guard !isPaused, sink != nil, !knownSessions.isEmpty else {
             stopTickTimer()
             return
         }
-        if tickTask != nil, wanted >= tickInterval {
-            tickInterval = wanted
-            return
-        }
-        stopTickTimer()
-        tickInterval = wanted
+        guard tickTask == nil else { return }
+        let interval = Self.tickInterval
         tickTask = Task { [weak self] in
             while !Task.isCancelled {
-                guard let interval = self?.tickInterval, interval > 0 else { return }
-                try? await Task.sleep(for: .seconds(interval), tolerance: .seconds(interval / 4))
+                try? await Task.sleep(for: .seconds(interval), tolerance: .seconds(interval / 3))
                 guard !Task.isCancelled, let self else { return }
                 self.tick()
             }
@@ -280,7 +266,6 @@ final class ClaudeLocalSessionSource: SessionSource {
     private func stopTickTimer() {
         tickTask?.cancel()
         tickTask = nil
-        tickInterval = 0
     }
 
     private func tick() {

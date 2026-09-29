@@ -124,6 +124,20 @@ public enum ShelfDragGeometry {
         guard isActive, let openRect else { return false }
         return openRect.insetBy(dx: -openSlack, dy: -openSlack).contains(point)
     }
+
+    /// Reach around the physical notch for text / link / image drags (a deliberate drag ONTO the notch).
+    public static let contentSlack: CGFloat = 8
+
+    /// Text, links and image data never open the shelf by merely passing near the notch (browser tabs and
+    /// text selections live right below it, boring.notch #1530). They count only when the pointer is on the
+    /// physical notch itself, or over the open shape while drop mode is on or the Shelf tab is already open.
+    public static func isNearForContent(
+        point: CGPoint, notchRect: CGRect, openRect: CGRect?, isActive: Bool, isShelfOpen: Bool
+    ) -> Bool {
+        if notchRect.insetBy(dx: -contentSlack, dy: -contentSlack).contains(point) { return true }
+        guard isActive || isShelfOpen, let openRect else { return false }
+        return openRect.insetBy(dx: -openSlack, dy: -openSlack).contains(point)
+    }
 }
 
 // MARK: - Drag pasteboard types
@@ -144,11 +158,25 @@ public enum ShelfDragTypes {
         "Apple files promise pasteboard type",
     ]
 
-    /// Only real file drags auto-open the shelf: plain text, links and browser tabs do not (boring.notch
-    /// #1530), they can still be dropped once the Shelf tab is open.
+    /// Only real file drags auto-open the shelf when they come near: plain text, links and browser tabs do not
+    /// (boring.notch #1530); see `ShelfDragGeometry.isNearForContent` for when those count.
     public static func isFileDrag(types: [String], extraPromiseTypes: [String] = []) -> Bool {
         types.contains { type in
             fileURLTypes.contains(type) || promiseTypes.contains(type) || extraPromiseTypes.contains(type)
         }
+    }
+
+    /// Non-file content the shelf drop target can take: text, a URL or raw PNG/TIFF image data.
+    public static let contentTypes: Set<String> = [
+        "public.utf8-plain-text",
+        "NSStringPboardType",
+        "public.url",
+        "public.png",
+        "public.tiff",
+    ]
+
+    /// A drag without files whose content can still be dropped on the shelf (text, a link, image data).
+    public static func isContentDrag(types: [String]) -> Bool {
+        types.contains { contentTypes.contains($0) }
     }
 }

@@ -82,6 +82,42 @@ struct ShelfInteractionTests {
         #expect(!ShelfDragGeometry.isNear(point: farBelow, notchRect: notch, openRect: nil, isActive: true))
     }
 
+    @Test func contentDragsNeedTheNotchItselfOrAnOpenShelf() {
+        let notch = CGRect(x: 663, y: 950, width: 185, height: 32)
+        let open = CGRect(x: 486, y: 794, width: 540, height: 188)
+        let onNotch = CGPoint(x: 700, y: 960)
+        let approaching = CGPoint(x: 640, y: 920)
+        let overOpenShape = CGPoint(x: 700, y: 820)
+        #expect(
+            ShelfDragGeometry.isNearForContent(
+                point: onNotch, notchRect: notch, openRect: open, isActive: false, isShelfOpen: false))
+        // Passing near the notch (tab bar, text selections) does not count for text/links …
+        #expect(
+            !ShelfDragGeometry.isNearForContent(
+                point: approaching, notchRect: notch, openRect: open, isActive: false, isShelfOpen: false))
+        #expect(
+            !ShelfDragGeometry.isNearForContent(
+                point: overOpenShape, notchRect: notch, openRect: open, isActive: false, isShelfOpen: false))
+        // … but the open Shelf tab (or active drop mode) takes them anywhere over its shape.
+        #expect(
+            ShelfDragGeometry.isNearForContent(
+                point: overOpenShape, notchRect: notch, openRect: open, isActive: false, isShelfOpen: true))
+        #expect(
+            ShelfDragGeometry.isNearForContent(
+                point: overOpenShape, notchRect: notch, openRect: open, isActive: true, isShelfOpen: false))
+        #expect(
+            !ShelfDragGeometry.isNearForContent(
+                point: overOpenShape, notchRect: notch, openRect: nil, isActive: true, isShelfOpen: true))
+    }
+
+    @Test func contentDragTypes() {
+        #expect(ShelfDragTypes.isContentDrag(types: ["public.utf8-plain-text"]))
+        #expect(ShelfDragTypes.isContentDrag(types: ["public.url", "dyn.ah62d4rv4gu8y"]))
+        #expect(ShelfDragTypes.isContentDrag(types: ["public.png"]))
+        #expect(!ShelfDragTypes.isContentDrag(types: ["com.apple.some-private-type"]))
+        #expect(!ShelfDragTypes.isContentDrag(types: []))
+    }
+
     @Test func onlyFileDragsCount() {
         #expect(ShelfDragTypes.isFileDrag(types: ["public.file-url", "public.utf8-plain-text"]))
         #expect(ShelfDragTypes.isFileDrag(types: ["com.apple.NSFilePromiseItemMetaData"]))

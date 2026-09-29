@@ -39,8 +39,8 @@ struct MediaArtworkView: View {
 // MARK: - Marquee
 
 /// One line of text: shown in full when it fits, gently scrolling back and forth when it does not.
-/// The scroll is a single `repeatForever` animation (driven by the render server), not a per-frame timer, and it
-/// only exists while the text overflows and the view is on screen.
+/// The scroll is a single `repeatForever` animation, not a per-frame timer, and it only exists while the text
+/// overflows and the Home tab is on screen. With Reduce Motion the text is truncated instead.
 struct MediaMarqueeText: View {
     let text: String
     let font: Font
