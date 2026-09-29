@@ -544,7 +544,10 @@ final class ClaudeSessionsModel {
             state.version == ClaudePersistedSessions.currentVersion,
             Date().timeIntervalSince(state.savedAt) < Self.sessionsMaxAge
         else { return }
-        let restored = state.sessions.filter(Self.isRestorable)
+        let desktopRunning = ClaudeSystemBridge.isApplicationRunning(bundleID: SessionHost.claudeDesktopBundleID)
+        let restored = state.sessions.filter { session in
+            Self.isRestorable(session) && (desktopRunning || session.host.kind != .claudeDesktop)
+        }
         guard !restored.isEmpty else { return }
         _ = store.restoreSessions(restored, now: Date())
         Log.claude.info("restored \(restored.count, privacy: .public) Claude session(s)")

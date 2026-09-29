@@ -24,6 +24,8 @@ final class ShelfDragDetector {
     var geometryProvider: (() -> (notch: CGRect, open: CGRect?)?)?
     /// Whether the Shelf tab is already expanded on screen (then text/link drags over it count too).
     var isShelfOpenProvider: (() -> Bool)?
+    /// Whether text/link drags may open the shelf at all (not while a fullscreen app hides the notch).
+    var allowsContentDrags: (() -> Bool)?
 
     private enum Gesture {
         case idle
@@ -140,7 +142,7 @@ final class ShelfDragDetector {
             gesture = .fileDrag
             Log.shelf.debug("File drag detected near the notch")
             updateNearState()
-        } else if ShelfDragTypes.isContentDrag(types: types) {
+        } else if ShelfDragTypes.isContentDrag(types: types), allowsContentDrags?() ?? true {
             gesture = .contentDrag
             updateNearState()
         } else {

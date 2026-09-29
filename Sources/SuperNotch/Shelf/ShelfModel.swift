@@ -106,6 +106,7 @@ final class ShelfModel {
         dragDetector.onNearChange = { [weak self] near in self?.setDragActive(near) }
         dragDetector.geometryProvider = { [weak self] in self?.dragGeometry() }
         dragDetector.isShelfOpenProvider = { [weak self] in self?.isShelfTabOnScreen ?? false }
+        dragDetector.allowsContentDrags = { [weak self] in !(self?.notch.isHiddenByFullscreen ?? true) }
         settingsToken = settingsStore.observe { [weak self] old, new in
             self?.settingsChanged(old: old, new: new)
         }
@@ -129,6 +130,7 @@ final class ShelfModel {
         dragDetector.onNearChange = nil
         dragDetector.geometryProvider = nil
         dragDetector.isShelfOpenProvider = nil
+        dragDetector.allowsContentDrags = nil
         settingsToken?.cancel()
         settingsToken = nil
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
@@ -654,8 +656,11 @@ final class ShelfModel {
             stopQuickLookWatchdog()
             return
         }
+        // "Visible" means actually on screen: a preview hidden behind another app's windows (we never activate)
+        // must not keep the notch held open.
         let previewVisible = NSApp.windows.contains { window in
-            window.isVisible && !quickLookBaselineWindows.contains(ObjectIdentifier(window))
+            window.isVisible && window.occlusionState.contains(.visible)
+                && !quickLookBaselineWindows.contains(ObjectIdentifier(window))
         }
         if previewVisible {
             sawQuickLookWindow = true

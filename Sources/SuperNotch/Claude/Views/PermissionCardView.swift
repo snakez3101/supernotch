@@ -106,8 +106,12 @@ struct PermissionCardView: View {
         .focusable(isPeek)
         .focused($isFocused)
         .focusEffectDisabled()
-        .onKeyPress(.return, phases: .down) { _ in handleReturn(requestID: request.id) ? .handled : .ignored }
-        .onKeyPress(.escape, phases: .down) { _ in handleEscape(requestID: request.id) ? .handled : .ignored }
+        .onKeyPress(keys: [.return], phases: [.down]) { _ in
+            handleReturn(requestID: request.id) ? .handled : .ignored
+        }
+        .onKeyPress(keys: [.escape], phases: [.down]) { _ in
+            handleEscape(requestID: request.id) ? .handled : .ignored
+        }
         .onAppear {
             guard isPeek else { return }
             if notch.isKeyFocused { isFocused = true }

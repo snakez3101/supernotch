@@ -6,6 +6,7 @@
 // While a drag is over/near the notch the row is replaced by `DropZonesView` ("Shelf" | "AirDrop").
 // `ShelfDropTargetView` (AppKit) lies on top of everything and receives the drops.
 import AppKit
+import QuickLook  // SwiftUI's `.quickLookPreview` modifiers live in QuickLook's SwiftUI overlay.
 import SuperNotchCore
 import SwiftUI
 
