@@ -334,6 +334,30 @@ struct HookBinaryTests {
         #expect(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == String(big.utf8.count))
     }
 
+    /// The wrapped command's exit status and stdout must reach Claude Code unchanged, for small input (exec path) and
+    /// for input larger than the pipe buffer (spawn-and-feed path).
+    @Test(arguments: [0, 1, 7, 64], [10, 300_000])
+    func statusLinePassesThroughTheWrappedExitStatus(_ code: Int32, _ size: Int) throws {
+        let home = try HookBinary.scratch()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let input = #"{"pad":""# + String(repeating: "x", count: size) + #""}"#
+        let result = try HookBinary.run(
+            ["statusline", "--wrap", "wc -c | tr -d ' '; printf 'done'; exit \(code)"], stdin: input,
+            environment: HookBinary.environment(home: home, socket: home + "/none.sock"))
+        #expect(result.status == code)
+        #expect(result.stdout == "\(input.utf8.count)\ndone")
+    }
+
+    @Test func statusLineReportsASignalKilledCommandLikeAShell() throws {
+        let home = try HookBinary.scratch()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let big = #"{"pad":""# + String(repeating: "x", count: 300_000) + #""}"#
+        let result = try HookBinary.run(
+            ["statusline", "--wrap", "cat >/dev/null; kill -TERM $$"], stdin: big,
+            environment: HookBinary.environment(home: home, socket: home + "/none.sock"))
+        #expect(result.status == 128 + SIGTERM)
+    }
+
     @Test func version() throws {
         let home = try HookBinary.scratch()
         defer { try? FileManager.default.removeItem(atPath: home) }

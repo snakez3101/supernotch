@@ -74,7 +74,9 @@ enum HookRunner {
             send(envelope, expectReply: false)
         }
         if let original = wrappedCommand(in: arguments) {
-            OriginalStatusLine.exec(command: original, stdin: input)  // returns only if exec failed
+            // exec(2) never returns; the large-input path returns the shell's exit status, which we adopt so both
+            // paths look the same to Claude Code. nil: nothing could be started, so fail open (exit 0, no output).
+            if let status = OriginalStatusLine.exec(command: original, stdin: input) { exit(status) }
             return
         }
         if let payload, let line = defaultStatusLine(payload) { StandardOutput.write(line + "\n") }
@@ -206,10 +208,11 @@ enum StdinReader {
 enum OriginalStatusLine {
     /// Replaces this process with `/bin/sh -c <command>` whose stdin is a pipe pre-filled with `stdin`. No
     /// timeout, no orphan, no relaying: Claude Code reads the command's stdout directly and cancels it directly.
-    /// For input larger than the pipe buffer it spawns the shell instead and waits for it.
-    static func exec(command: String, stdin: Data) {
+    /// For input larger than the pipe buffer it spawns the shell instead and waits for it; the shell's exit status
+    /// is then returned (`nil` when exec or spawn failed: fail open).
+    static func exec(command: String, stdin: Data) -> Int32? {
         var fds: [Int32] = [0, 0]
-        guard pipe(&fds) == 0 else { return }
+        guard pipe(&fds) == 0 else { return nil }
         let readEnd = fds[0]
         let writeEnd = fds[1]
         let flags = fcntl(writeEnd, F_GETFL)
@@ -229,22 +232,28 @@ enum OriginalStatusLine {
         let arguments = ["/bin/sh", "-c", command]
         if offset == bytes.count {
             _ = Glue.close(writeEnd)
-            guard dup2(readEnd, 0) >= 0 else { return }
+            guard dup2(readEnd, 0) >= 0 else { return nil }
             _ = Glue.close(readEnd)
             _ = withCStrings(arguments) { argv in execv("/bin/sh", argv) }
-            return  // exec failed: print nothing (fail open)
+            return nil  // exec failed: print nothing (fail open)
         }
-        spawnAndFeed(arguments, readEnd: readEnd, writeEnd: writeEnd, remaining: Array(bytes[offset...]))
+        return spawnAndFeed(arguments, readEnd: readEnd, writeEnd: writeEnd, remaining: Array(bytes[offset...]))
     }
 
-    /// Large-input fallback: child gets the pipe as stdin and inherits our stdout; we feed the rest and wait.
-    static func spawnAndFeed(_ arguments: [String], readEnd: Int32, writeEnd: Int32, remaining: [UInt8]) {
+    /// Large-input fallback: child gets the pipe as stdin and inherits our stdout (so its output is passed through
+    /// untouched); we feed the rest, wait, and return its exit status like a shell would (128 + signal when it was
+    /// killed). `nil` when it could not be spawned.
+    static func spawnAndFeed(_ arguments: [String], readEnd: Int32, writeEnd: Int32, remaining: [UInt8]) -> Int32? {
         #if canImport(Darwin)
             var actions: posix_spawn_file_actions_t?
         #else
             var actions = posix_spawn_file_actions_t()
         #endif
-        guard posix_spawn_file_actions_init(&actions) == 0 else { return }
+        guard posix_spawn_file_actions_init(&actions) == 0 else {
+            _ = Glue.close(readEnd)
+            _ = Glue.close(writeEnd)
+            return nil
+        }
         defer { posix_spawn_file_actions_destroy(&actions) }
         _ = posix_spawn_file_actions_adddup2(&actions, readEnd, 0)
         _ = posix_spawn_file_actions_addclose(&actions, writeEnd)
@@ -257,7 +266,7 @@ enum OriginalStatusLine {
         _ = Glue.close(readEnd)
         guard spawned == 0 else {
             _ = Glue.close(writeEnd)
-            return
+            return nil
         }
         let flags = fcntl(writeEnd, F_GETFL)
         if flags >= 0 { _ = fcntl(writeEnd, F_SETFL, flags & ~O_NONBLOCK) }
@@ -274,7 +283,16 @@ enum OriginalStatusLine {
         }
         _ = Glue.close(writeEnd)
         var status: Int32 = 0
-        while waitpid(child, &status, 0) < 0 && errno == EINTR {}
+        while waitpid(child, &status, 0) < 0 && errno == EINTR {
+            // retry after a signal
+        }
+        return exitStatus(fromWaitStatus: status)
+    }
+
+    /// The shell convention for a `waitpid` status (the WIFEXITED macros are not importable into Swift).
+    static func exitStatus(fromWaitStatus status: Int32) -> Int32 {
+        let terminatingSignal = status & 0x7f
+        return terminatingSignal == 0 ? (status >> 8) & 0xff : 128 + terminatingSignal
     }
 
     /// NULL-terminated C string array valid for the duration of `body`.
