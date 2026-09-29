@@ -10,8 +10,23 @@ import SuperNotchCore
     import Glibc
 #endif
 
+/// Runs blocking work (process spawns, file IO, login-shell lookups) on a GCD queue instead of the Swift
+/// concurrency pool, whose few threads must never sit in `DispatchSemaphore.wait` for seconds.
+nonisolated enum ClaudeBackground {
+    private static let queue = DispatchQueue(
+        label: "io.github.snakez3101.supernotch.claude.blocking", qos: .utility, attributes: .concurrent)
+
+    static func run<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: work())
+            }
+        }
+    }
+}
+
 nonisolated enum ClaudeProcessRunner {
-    struct Output: Sendable {
+    nonisolated struct Output: Sendable {
         var status: Int32
         var stdout: Data
         var timedOut: Bool
@@ -113,7 +128,7 @@ nonisolated enum ClaudeProcessRunner {
 
     // MARK: - State
 
-    private final class OutputBox: @unchecked Sendable {
+    private nonisolated final class OutputBox: @unchecked Sendable {
         private let lock = NSLock()
         private var value: Output?
         func set(_ output: Output?) {
@@ -128,7 +143,7 @@ nonisolated enum ClaudeProcessRunner {
         }
     }
 
-    private final class RunState: @unchecked Sendable {
+    private nonisolated final class RunState: @unchecked Sendable {
         private let lock = NSLock()
         private let reader: FileHandle
         private let limit: Int
@@ -222,7 +237,7 @@ nonisolated final class ClaudeCLIEnvironment: @unchecked Sendable {
     static let shared = ClaudeCLIEnvironment()
 
     /// What an internal `claude` call is for (decides the extra environment).
-    enum Purpose: Sendable {
+    nonisolated enum Purpose: Sendable {
         /// `claude --version`, `claude agents --json`.
         case query
         /// The Haiku title call: safe mode (no MCP servers, hooks, CLAUDE.md, plugins).
@@ -279,21 +294,40 @@ nonisolated final class ClaudeCLIEnvironment: @unchecked Sendable {
         return found
     }
 
-    /// `claude --version`, cached per executable. Nil when unknown (installer then uses base events only).
-    func claudeVersion(executable: String, homeDirectory: String) -> ClaudeVersion? {
+    /// argv prefix that runs Claude Code: the invocation a hook reported (`HookContext.claudeInvocation`, e.g.
+    /// `[node, …/cli.js]` for npm installs, which a bare `claude` lookup under launchd's PATH would miss) while it
+    /// still exists on disk, else `[claudeExecutable(…)]`. Nil when Claude Code is not installed. Blocking.
+    func claudeInvocation(homeDirectory: String, reported: [String]?, hint: String?) -> [String]? {
+        if let reported, Self.isUsableInvocation(reported) { return reported }
+        return claudeExecutable(homeDirectory: homeDirectory, hint: hint).map { [$0] }
+    }
+
+    /// `[executable]` or `[interpreter, script]`, absolute and present.
+    static func isUsableInvocation(_ invocation: [String]) -> Bool {
+        guard let first = invocation.first, first.hasPrefix("/"), (1...2).contains(invocation.count),
+            FileManager.default.isExecutableFile(atPath: first)
+        else { return false }
+        guard invocation.count == 2 else { return true }
+        return invocation[1].hasPrefix("/") && FileManager.default.fileExists(atPath: invocation[1])
+    }
+
+    /// `claude --version`, cached per invocation. Nil when unknown (installer then uses base events only).
+    func claudeVersion(invocation: [String], homeDirectory: String) -> ClaudeVersion? {
+        guard let executable = invocation.first else { return nil }
+        let key = invocation.joined(separator: "\u{0}")
         lock.lock()
-        let cached = cachedVersions[executable]
+        let cached = cachedVersions[key]
         lock.unlock()
         if let cached { return cached }
         guard
             let output = ClaudeProcessRunner.runSync(
-                executable: executable, arguments: ["--version"],
+                executable: executable, arguments: Array(invocation.dropFirst()) + ["--version"],
                 environment: environment(homeDirectory: homeDirectory, configDirectory: nil),
                 currentDirectory: homeDirectory, timeout: 5),
             output.succeeded, let version = ClaudeVersion(output.text)
         else { return nil }
         lock.lock()
-        cachedVersions[executable] = version
+        cachedVersions[key] = version
         lock.unlock()
         return version
     }

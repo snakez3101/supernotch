@@ -51,7 +51,8 @@ final class HotkeyCenter {
     func register(_ combo: KeyCombo, for action: HotkeyAction, handler: @escaping () -> Void) -> Bool {
         unregister(action)
         guard combo.isValidGlobalHotkey else {
-            Log.system.error("Refusing hotkey without ⌘/⌥/⌃ for \(String(describing: action), privacy: .public)")
+            // macOS 15+ refuses ⌥-only / ⌥⇧ global hotkeys, so ⌘ or ⌃ is required (KeyCombo.isValidGlobalHotkey).
+            Log.system.error("Refusing hotkey without ⌘ or ⌃ for \(String(describing: action), privacy: .public)")
             return false
         }
         guard installEventHandlerIfNeeded() else { return false }

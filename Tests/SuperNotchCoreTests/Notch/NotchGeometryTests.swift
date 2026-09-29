@@ -29,6 +29,33 @@ struct NotchGeometryTests {
         #expect(geometry.panelFrame == CGRect(x: 864 - 290, y: 1117 - 340, width: 580, height: 340))
     }
 
+    /// Explicit conformances (CGRect is not Hashable on Apple platforms): equal values hash equally.
+    @Test func equalityAndHashingUseTheComponents() throws {
+        let a = try #require(mbp14)
+        let b = try #require(
+            NotchGeometry(
+                screenFrame: CGRect(x: 0, y: 0, width: 1512, height: 982), safeAreaTop: 32,
+                auxiliaryTopLeftWidth: 663.5, auxiliaryTopRightWidth: 663.5))
+        let c = try #require(mbp16)
+        #expect(a == b)
+        #expect(a.hashValue == b.hashValue)
+        #expect(a != c)
+        #expect(Set([a, b, c]).count == 2)
+
+        let window = NotchWindowSample(ownerPID: 7, layer: 0, bounds: CGRect(x: 1, y: 2, width: 3, height: 4))
+        var moved = window
+        moved.bounds.origin.y = 3
+        #expect(window == NotchWindowSample(ownerPID: 7, layer: 0, bounds: CGRect(x: 1, y: 2, width: 3, height: 4)))
+        #expect(window != moved)
+        #expect(Set([window, moved, window]).count == 2)
+
+        #expect(NotchClosedWings(leading: 36, trailing: 36).hashValue == NotchClosedWings(leading: 36, trailing: 36).hashValue)
+        #expect(NotchClosedWings(trailing: 14) != NotchClosedWings(leading: 14))
+        let stops = NotchMetrics.glassGradientStops(notchHeight: 32, shapeHeight: 188)
+        #expect(stops == NotchMetrics.glassGradientStops(notchHeight: 32, shapeHeight: 188))
+        #expect(stops.hashValue == NotchMetrics.glassGradientStops(notchHeight: 32, shapeHeight: 188).hashValue)
+    }
+
     @Test func noNotch() {
         #expect(
             NotchGeometry(

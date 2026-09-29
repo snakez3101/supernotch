@@ -32,8 +32,9 @@ nonisolated final class ClaudeVnodeWatcher: @unchecked Sendable {
             self.path = path
             let source = DispatchSource.makeFileSystemObjectSource(
                 fileDescriptor: fd, eventMask: events, queue: Self.queue)
-            source.setEventHandler { [weak source] in
-                guard let source else { return }
+            // Dispatch source protocols are not class-bound (no `[weak source]`). The strong capture is a cycle
+            // only until `cancel()`, which `deinit` guarantees; dispatch then releases the handler.
+            source.setEventHandler {
                 handler(source.data)
             }
             source.setCancelHandler { _ = Darwin.close(fd) }

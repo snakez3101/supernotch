@@ -24,30 +24,38 @@ practically zero CPU. Everything stays on your Mac.
 
 ## Features
 
-**Claude Code sessions** (terminal, IDE and the Claude desktop app's Code tab)
+**Claude Code sessions** (terminal, IDE, the VS Code extension and the Claude desktop app's Code tab)
 
 - Traffic light per session: 🟡 working, 🟢 done, 🔴 needs you (question or permission).
-- Permission requests appear as a card with **Allow**, **Always allow** and **Deny**. Dangerous commands
-  (`rm -rf`, `git push --force`, `sudo`, ...) are highlighted and need a second confirming click.
+- Permission requests appear as a card with **Allow**, **Always allow** and **Deny**. A subagent's request shows up
+  on its parent session. Dangerous commands (`rm -rf`, `git push --force`, `sudo`, ...) are highlighted and need
+  a second confirming click. Return and Esc only work after you click into the notch, so typing in your terminal
+  can never approve by accident.
+- Questions from Claude (`AskUserQuestion`) turn the row red and take you to the chat; there is no Allow/Deny for them.
+- Background runs (`claude -p`, Agent SDK apps, Cowork) are hidden. If SuperNotch is not running, Claude Code
+  behaves exactly as before.
 - Short session titles: Claude Code's own title when there is one, otherwise a 2-4 word title from Claude Haiku
-  through your existing `claude` login (no API key).
+  through your existing `claude` login (no API key), asked for only after Claude Code has had its chance.
 - Usage limits (5-hour and weekly) as two thin bars, with a small warning dot in the closed notch above 80 %.
-- Click a session to jump to it (Claude desktop app or the hosting terminal).
+- Click a session to jump to it (Claude desktop app, VS Code or the hosting terminal).
 - Auto-popups only when it matters: 🔴 always (even in fullscreen), 🟢 only if you are not already looking at
-  that app. No sounds.
+  that app. Several waiting cards are queued ("1 of 3"). No sounds.
 
 **Spotify** (desktop app only, via AppleScript; no login, no web API)
 
 - Cover, title, artist, progress with seek, play/pause, previous/next.
-- Closed "island" style shows the cover on the left and a small visualizer on the right.
+- Closed "island" style shows the cover on the left and a small animated visualizer on the right, only while a
+  track is playing.
 
 **Shelf and clipboard**
 
 - Drag files into the notch, drag them out again (copies), persistent across restarts, automatic cleanup
-  (Off / 1 day / 7 days / 30 days).
+  (Off / 1 day / 7 days / 30 days; pinned items stay). Text, links and images can be dropped too. Select several
+  tiles, Quick Look them, reveal them in Finder or share them.
 - Two drop zones while dragging: **Shelf** and **AirDrop** (opens the AirDrop picker immediately).
-- Clipboard history of text, links and images (200 entries by default). Password-manager entries (concealed or
-  transient) are never stored.
+- Clipboard history of text, links, images and files (200 entries by default, 50 to 1000), with search and pins.
+  In the ⌥⌘V panel: ↑/↓ to move, Return to paste, ⌘Return to copy, ⌘1 to ⌘9 to paste a row. Password-manager
+  entries (concealed or transient) and apps you ignore are never stored.
 
 **Look and feel**
 
@@ -56,7 +64,7 @@ practically zero CPU. Everything stays on your Mac.
 - Opens after a short hover (about 0.15 s) with a subtle haptic tick; closes when the mouse leaves.
 - Two closed styles: *invisible until an event* (looks like the plain notch) or *Dynamic Island style*.
 - Only on the built-in display that has a notch. Hides in fullscreen apps. Hotkeys: ⌥⌘N (notch) and ⌥⌘V
-  (clipboard), both rebindable.
+  (clipboard), both rebindable (a shortcut needs ⌘ or ⌃).
 
 ## Requirements
 
@@ -101,21 +109,24 @@ Pin a version with `... | bash -s -- --version v1.0.0`.
 
 Maintainers: see [docs/INSTALL.md](docs/INSTALL.md) for the signing certificate and release setup.
 
-## First run and permissions
+## Permissions
 
 On first launch a short setup wizard runs (Settings > General > *Run setup again* repeats it). Every step can be
 skipped and nothing is required to use the parts you do not need.
 
-| Feature | Permission | When it is asked |
+| Permission | Used for | When it is asked |
 |---|---|---|
-| Spotify controls | **Automation** (System Settings > Privacy & Security > Automation): allow SuperNotch to control Spotify | The first time SuperNotch talks to a running Spotify |
-| Jump to a terminal window | **Automation** for the terminal app (best effort) | The first time you click a session hosted in that terminal |
-| Paste from clipboard history (⌥⌘V, Return) | **Accessibility** (SuperNotch posts a ⌘V key event) | On the clipboard step of the wizard, or the first paste |
-| Claude Code sessions | none, but the **hooks** must be installed (see below) | Hooks step of the wizard |
-| Hotkeys, hover, drag detection | none | - |
+| **Automation** > Spotify | Spotify controls and cover (AppleScript to the running Spotify desktop app) | The first time SuperNotch talks to a running Spotify |
+| **Automation** > iTerm2 or Terminal | Jump to the right terminal window or tab (best effort; other terminals are just brought to the front) | The first time you click a session hosted in that terminal |
+| **Accessibility** | Paste from clipboard history (⌥⌘V, Return): SuperNotch posts a ⌘V key event. Without it the entry is only copied and you press ⌘V yourself | The clipboard step of the wizard, or the first paste |
+| Files | No Full Disk Access needed. SuperNotch is not sandboxed. It keeps its own data in `~/Library/Application Support/SuperNotch` (shelf copies, clipboard history, hook helper, backups), and edits only `~/.claude/settings.json` (with a backup) | - |
+| Pasteboard | macOS 15.4 and later may ask to allow "Paste from Other Apps" for clipboard history | When history starts recording |
+| Hotkeys, hover | none | - |
 
-If the notch does not react to hover or file drags (newer macOS releases may require it), enable SuperNotch under
-**Accessibility**. The wizard and Settings show the current status.
+Claude Code sessions need no permission, but the **hooks** must be installed (see below). If the notch does not
+react to hover or file drags (newer macOS releases may require it), enable SuperNotch under **Accessibility**.
+The wizard and Settings show the current status. Everything stays on your Mac. The only network requests
+SuperNotch makes itself are for Spotify cover images.
 
 ### Claude Code hooks
 
@@ -126,8 +137,10 @@ never touched, and an invalid `settings.json` is never overwritten. The hook hel
 `~/Library/Application Support/SuperNotch/bin/supernotch-hook`, talks to the app over a private Unix socket, and
 **fails open**: if SuperNotch is not running, Claude Code carries on exactly as before.
 
-Optionally SuperNotch wraps your `statusLine` to read the usage limits; the original is stored and restored on
-uninstall.
+Newer hook events (Claude Code 2.1.101 and later) are installed only when your `claude` is recent enough; older
+versions get the base set. Optionally SuperNotch wraps your `statusLine` to read the usage limits: your own command
+still runs unchanged (SuperNotch just hands over to it), and the original is stored and restored on uninstall.
+Without a status line of your own it shows "Model · N% context".
 
 ### Keeping your permissions across updates
 

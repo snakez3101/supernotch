@@ -108,6 +108,16 @@ public enum NotchMetrics {
             self.solidEnd = solidEnd
             self.clearAt = clearAt
         }
+
+        // Explicit so the conformance is identical on Linux and Apple platforms.
+        public static func == (lhs: GlassGradientStops, rhs: GlassGradientStops) -> Bool {
+            lhs.solidEnd == rhs.solidEnd && lhs.clearAt == rhs.clearAt
+        }
+
+        public func hash(into hasher: inout Hasher) {
+            hasher.combine(solidEnd)
+            hasher.combine(clearAt)
+        }
     }
 
     /// Solid black down to the notch height, clear at about 65 % of the shape height (never less than

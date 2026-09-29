@@ -35,7 +35,7 @@ final class SpotifyController {
         guard observer == nil else { return }
         let observer = SpotifyEventObserver { [weak self] event in
             // Delivered on the main thread by the notification centres; hop explicitly for the compiler.
-            Task { @MainActor in self?.onEvent?(event) }
+            Task { @MainActor in self?.deliver(event) }
         }
         observer.startObserving()
         self.observer = observer
@@ -44,6 +44,16 @@ final class SpotifyController {
     func stop() {
         observer?.stopObserving()
         observer = nil
+    }
+
+    private func deliver(_ event: SpotifyControllerEvent) {
+        switch event {
+        case .launched, .terminated:
+            usesCoreStatusScript = false  // a relaunched (maybe updated) Spotify gets the full script again
+        case .playbackChanged, .didWake:
+            break
+        }
+        onEvent?(event)
     }
 
     // MARK: State

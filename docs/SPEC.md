@@ -88,7 +88,8 @@ Animations:
 * **Hotkeys:**
   * ⌥⌘N toggles the notch (expanded, on the last tab).
   * ⌥⌘V toggles the clipboard history panel.
-  * Both can be rebound in Settings (Carbon `RegisterEventHotKey`, no Accessibility needed).
+  * Both can be rebound in Settings (Carbon `RegisterEventHotKey`, no Accessibility needed). A shortcut must
+    include ⌘ or ⌃ (`KeyCombo.isValidGlobalHotkey`): macOS 15+ rejects hotkeys whose only modifiers are ⌥ or ⌥⇧.
 * **Keyboard focus:** the panel becomes key **only** when the user explicitly interacts. That means a
   click inside it, opening via hotkey, or the clipboard panel. Hover-open and auto-popups never make it key,
   so they never steal typing focus.
@@ -446,7 +447,7 @@ public struct HoverIntent: Sendable { /* pure dwell state machine; see file */ }
   `UserDefaults` under `AppSettings.userDefaultsKey` ("sn.settings.v1") and decoded tolerantly: a missing
   key takes its default.
 * `KeyCombo`: Carbon keyCode + Carbon modifier mask. Defaults: `.toggleNotchDefault` (⌥⌘N, keyCode 45),
-  `.clipboardHistoryDefault` (⌥⌘V, keyCode 9).
+  `.clipboardHistoryDefault` (⌥⌘V, keyCode 9). `isValidGlobalHotkey` requires ⌘ or ⌃.
 
 ### D.4 App-side observable models (FROZEN API; implementation owned by the stream)
 
@@ -570,6 +571,10 @@ func imageURL(for entry: ClipboardEntry) -> URL?
 | `ShelfTabView()` | shelf-clipboard | Shelf tab (incl. `DropZonesView` while dragging) |
 | `ShelfSettingsSection()`, `ClipboardSettingsSection()`, `OnboardingPasteStep()` | shelf-clipboard | Settings / onboarding |
 | `NotchContainerView()` | notch-shell | root of the panel (reads `NotchViewModel`, uses `NotchSlots`) |
+
+The Settings sections (`MediaSettingsSection`, `ClaudeSettingsSection`, `ShelfSettingsSection`,
+`ClipboardSettingsSection`) each bring their own `Form { … }.formStyle(.grouped)`. `SettingsView` must host them
+directly and never wrap them in another `Form`.
 
 `NotchSlots` (FOUNDATION) is the only place that references stream views for the notch. The shell renders:
 * `NotchSlots.islandLeading()` and `NotchSlots.islandTrailing()` when closed;
@@ -719,7 +724,8 @@ Automation permission is requested lazily, per host.
 
 * The statusLine bridge (§D.7) is the only source. There is **no** Keychain or token scraping.
 * `ClaudeSessionsModel.usage` shows the latest value (pruned when `resetsAt` passes) and keeps it across
-  restarts in `UserDefaults` key `sn.claude.usage`.
+  restarts in `UserDefaults` key `sn.claude.usage` (`SessionStore.restoreUsage` seeds it; live data wins within
+  the same window).
 * Views: `UsageBarsView` with two 3 pt bars, labelled "5h" and "7d", showing the percentage and the reset
   time on hover. It turns orange at the threshold and red at ≥ 95 %.
 
@@ -850,58 +856,101 @@ Lifecycle and windows (implemented in `App/AppDelegate.swift`):
 
 ## E. Claude session state machine (claude-core, `SessionStore.apply`)
 
+The header comment of `Sources/SuperNotchCore/Claude/SessionStore.swift` and the fixture-replay tests
+(`Tests/SuperNotchCoreTests/Claude`, `Fixtures/claude/seq-*.jsonl`) are the source of truth. This section
+summarises them.
+
 ### E.1 Transitions
+
+"Main thread" means an event without `agent_id`. Events with `agent_id` come from a subagent (see §E.2).
 
 | Event (hook unless noted) | Condition | New phase / effect |
 |---|---|---|
-| SessionStart | new id | create `.idle`, row hidden until first prompt if host is Claude Desktop (pre-warm) ⇒ `visibility = .hiddenUntilFirstPrompt`; set `sessionTitle` candidate; `transcriptRefreshNeeded` |
-| SessionStart | `source == "resume"/"clear"/"compact"` on known id | keep row; `clear` resets titles/firstPrompt |
-| UserPromptSubmit | – | `.working`; clears `lastError`; sets `firstPrompt` once; hidden-until-first-prompt ⇒ visible (`sessionAppeared`); `titleGenerationNeeded` if `TitleResolver.needsGeneration` |
-| PreToolUse | tool == `AskUserQuestion` | `.needsInput(.question)` |
-| PreToolUse / PostToolUse / PostToolUseFailure / SubagentStart / PreCompact / PostCompact | phase ≠ `.done` / `.idle` **or** there is an unresolved pending permission | `.working` (**#98 rule:** after Stop, late PostToolUse does *not* revive the session) |
-| PermissionRequest | visible session, not subagent (`agent_id` absent) | add `PermissionRequest`; `.needsInput(.permission)`; `permissionAdded` |
-| PermissionRequest | hidden / subagent / internal | `replyPassthrough` (hook shows native prompt) |
-| PostToolUse / PostToolUseFailure / PermissionDenied | a pending permission of this session whose `tool_name` + `tool_input` match (no `tool_use_id` on PermissionRequest) | remove it (`permissionRemoved` + `replyPassthrough`); phase `.working` (or `.done` for PermissionDenied if Stop follows) |
-| `permissionAnswered` (app) | – | remove request; `.working` if allow, stays `.working` on deny (Claude continues) |
-| `permissionConnectionClosed` | – | remove request; if no other pending ⇒ `.working` |
-| Notification | `notification_type` ∈ `NotificationType.needsInput` and no pending permission | `.needsInput(.permission)` if `permission_prompt`, else `.question` |
-| Notification | `idle_prompt` | `.done` |
-| Stop | – | `.done`; store `lastAssistantPreview` (first 140 chars); remove all pending permissions (`replyPassthrough`) |
-| StopFailure | – | `.done` + `lastError = error` |
-| SubagentStart / SubagentStop | – | `activeSubagents` ± 1 (clamped ≥ 0); never a row |
-| SessionEnd | – | remove session + its permissions (`sessionRemoved`) |
-| `agentsSnapshot` | per matching `sessionId` | `status=busy` ⇒ `.working` (unless needsInput); `status=waiting` ⇒ `.needsInput(waitingFor contains "permission" ? .permission : .question)` only if no hook-driven needsInput already; `status=idle` && phase `.working` for > 10 s since last hook ⇒ `.done`; background `state` maps working/blocked/done; failed/stopped ⇒ remove; fill `agentsName` candidate |
-| `agentsSnapshot` | known session whose pid is not listed, snapshot is non-empty and session older than 30 s | nothing (liveness decides) |
-| `processExited(pid)` | – | remove every session with that pid |
-| `transcript(id, signals)` | – | update title candidates; `interrupted && phase == .working` ⇒ `.done` |
-| `titleGenerated` | – | set `generated` candidate |
-| `tick` | phase `.working` and no event for 10 min | `isStale = true` (cleared by any event) |
-| `hook(.statusLine)` | – | update `usage` (`UsageLimits.fromStatusLine`), `usageUpdated` |
+| SessionStart | new id | create `.idle` with the visibility of §E.2 (a Claude Desktop pre-warm ⇒ `.hiddenUntilFirstPrompt`); `session_title` candidate; `transcriptRefreshNeeded` |
+| SessionStart | `source == "clear"` on a known id | drop pending cards; reset titles, `firstPrompt`, preview, error; `.idle`. `resume` / `compact` keep the row |
+| UserPromptSubmit | main thread | drop pending cards; `.working`; clears `lastError`; sets `firstPrompt` once; a hidden-until-first-prompt row becomes visible (`sessionAppeared`) |
+| PreToolUse | main thread, tool == `AskUserQuestion` | `.needsInput(.question)` |
+| PreToolUse | main thread, no pending card | `.working`. This **revives** a `.done` / `.idle` session: it fires before execution, so it is never "late" (Stop-hook continuations, `/goal`, crons) |
+| PreToolUse | any | remembers `tool_use_id`, tool and input (last 32 per session) for the card link below. A subagent's PreToolUse changes no phase |
+| PostToolUse / PostToolUseFailure | main thread | `.working` only if the phase is already active (or the session is new) and no card is pending (**#98:** a late event after Stop does *not* revive `.done` / `.idle`) |
+| PreCompact / PostCompact | – | only a new session starts `.working`; never revives `.done` / `.idle` |
+| PermissionRequest | tool == `AskUserQuestion` | `replyPassthrough`, `.needsInput(.question)`, never a card |
+| PermissionRequest | visible session (or a Desktop pre-warm, which becomes visible), main thread **or subagent** | add `PermissionRequest` (a subagent's carries `agentID` / `agentType`); `.needsInput(.permission)`; `permissionAdded`. The card is linked to the newest unlinked PreToolUse of the same agent, tool and input (`tool_use_id`) |
+| PermissionRequest | hidden (internal / headless) | `replyPassthrough` (Claude Code shows its own prompt) |
+| PostToolUse / PostToolUseFailure / PermissionDenied | a pending card of this session with the same `tool_use_id` (input matching by tool + input only as a fallback, same agent) | remove it (`permissionRemoved` + `replyPassthrough`); no card left ⇒ `.needsInput` becomes `.working`. This works for a subagent's own events too |
+| `permissionAnswered` (app) | – | remove the card; no card left ⇒ `.working` (allow and deny both let Claude continue) |
+| `permissionConnectionClosed` | – | remove the card; no card left ⇒ `.working`, **unless** our hook gave up after its own reply timeout (≥ 285 s after the request): the native prompt is still up, so the row stays 🔴. Also `transcriptRefreshNeeded` (an Esc interrupt fires no Stop) |
+| Notification | `permission_prompt` / `elicitation_dialog` / `elicitation_url_dialog`, no pending card | `.needsInput(.permission)` for the first, `.needsInput(.question)` for the others. `agent_needs_input` is ignored: it is about a different session |
+| Notification | `idle_prompt` | drop pending cards; `.done` (unless the row is idle-and-known or hidden-until-first-prompt) |
+| Notification | `elicitation_complete` / `elicitation_response` / `quota_auto_resume_fired` | `.needsInput` with no card ⇒ `.working` |
+| Stop | main thread | drop pending cards; `.done`; store `lastAssistantPreview` (first 140 chars) and `hasBackgroundWork`; `transcriptRefreshNeeded` |
+| StopFailure | main thread | drop pending cards; `.done` + `lastError` (readable text for the ⚠ badge) |
+| SubagentStart / SubagentStop | – | add / remove the `agent_id` in the parent's set (`activeSubagents` = its size; SubagentStop also fires for internal agents that never started). Never a row. SubagentStart keeps `.working` (or starts a new session) but never revives `.done` / `.idle`. A Stop / StopFailure carrying `agent_id` only refreshes `updatedAt` |
+| SessionEnd | real, Desktop host, visible, not idle, reason `other` | **parked**: the row stays (pid dropped, cards dropped, working ⇒ `.done`) for `desktopParkedLifetime` (30 min) because Desktop may run one CLI process per turn. Any later hook event un-parks it |
+| SessionEnd / `processExited(pid)` | anything else | remove the session and its cards (`sessionRemoved`) and remember it for 10 min (late hooks other than SessionStart / UserPromptSubmit are ignored). `processExited` behaves like a real SessionEnd with reason `other` for every session with that pid |
+| `sessionEnded` (app, synthetic SessionEnd) | – | always removes, never parks (Claude Desktop quit) |
+| `agentsSnapshot` | unknown `sessionId` | **adopt** it (app restart, hooks not installed yet): needs pid and cwd, a live `state`, kind interactive or background, not recently removed. The phase is mapped from `status` / `state`; `transcriptRefreshNeeded`. Hooks refine it later |
+| `agentsSnapshot` | known session | `name` ⇒ `agentsName` candidate (unless a default name like `repo-3f`); fills a missing pid; `failed` / `stopped` ⇒ remove. Phase drift is corrected only after hooks were silent for `agentsIdleGrace` (10 s), so a snapshot taken before the latest hook cannot undo it: `busy` ⇒ `.working` (no card pending); `waiting` ⇒ `.needsInput` (permission for a permission or sandbox wait, question for an input wait; none when the user opened a dialog themselves or it waits on a worker) if not already; `idle` ⇒ `.done` when `.working` or `.needsInput` with no card. `busy` always refreshes `updatedAt` (not stale) |
+| `agentsSnapshot` | known session whose pid is not listed | nothing (liveness decides) |
+| `transcript(id, signals)` | – | update `customTitle` / `aiTitle` candidates; an interrupt marker of the **current turn** while `.working` / `.needsInput` ⇒ drop cards, `.done`. An interrupt older than the turn (`interruptedAt` before the prompt), or one without a timestamp read within 3 s of a new prompt, is ignored |
+| `titleGenerated` | – | set the `generated` candidate (sanitised) |
+| `tick` | `.working` and no event for 10 min | `isStale = true` (cleared by any event). Also expires parked rows (30 min), hidden sessions (1 h), tombstones, and prunes usage windows past `resetsAt` |
+| `hook(.statusLine)` | – | update `usage` (`UsageLimits.fromStatusLine`, merged with the previous value), `usageUpdated`; `session_name` ⇒ `sessionTitle` candidate (unless a default name) |
+
+**Card lifetime.** Every pending card of a session is dropped (each with `permissionRemoved` +
+`replyPassthrough`) on UserPromptSubmit, Stop, StopFailure, Notification `idle_prompt`, a fresh transcript
+interrupt, `SessionStart(clear)`, and when the session is parked or removed. None of these can happen while a
+native permission dialog is open, so a card can never outlive its turn.
 
 After every applied event the store recomputes `title = TitleResolver.resolve(...)`. It emits
-`phaseChanged` only on a real phase change.
+`phaseChanged` only on a real phase change of a visible session.
 
 ### E.2 Visibility (hidden sessions never create rows, popups or permission cards)
 
-* `context.isInternal` (SUPERNOTCH_INTERNAL=1, our own Haiku and `claude agents` calls) gives `.hiddenInternal`.
-* `context.isPrintMode`, `entrypoint` starting with `sdk`, or `CLAUDE_CODE_ENTRYPOINT == "sdk-*"` gives
-  `.hiddenHeadless`.
-* Events with `agent_id` (inside a subagent) update only the parent's `activeSubagents`/`updatedAt`.
+Hosts are classified **first** (`HookContext.isDesktopHost` / `isInteractiveHost` / `isHeadless`), then the flags:
+
+1. `context.isInternal` (SUPERNOTCH_INTERNAL=1: our own Haiku and `claude agents` calls) gives `.hiddenInternal`.
+2. `context.isHeadless` gives `.hiddenHeadless`: third-party Agent SDK apps (`CLAUDE_CODE_ENTRYPOINT` starting
+   with `sdk`), **Cowork** (`local-agent`, hidden even though it runs inside Claude Desktop), and a plain
+   `claude -p` / `--print` run.
+3. **Interactive GUI hosts stay visible even with `-p`.** Claude Desktop's Code tab (entrypoint
+   `claude-desktop` / `claude-desktop-3p`, bundle id `com.anthropic.claudefordesktop`, or a `local_…`
+   `CLAUDE_CODE_HOST_SESSION_ID`) and the VS Code extension (`claude-vscode`) drive the CLI with
+   `-p` / stream-json but show the chat, so they are never headless.
+4. A Desktop SessionStart (the pre-warm) gives `.hiddenUntilFirstPrompt`; the row appears with the first prompt
+   or the first real activity.
+5. Hidden-ness only gets stricter: a later event may reveal that a session first seen through
+   `claude agents --json` was internal or headless. Hidden sessions without events for 1 h are forgotten.
+
+Other rules:
+* Events with `agent_id` (inside a subagent) never create a row and never change the parent's phase. They
+  only update its subagent set and `updatedAt`. The exception is a subagent's **PermissionRequest**: it is
+  a card on the parent session (§A.7), resolved by that subagent's own PostToolUse / PostToolUseFailure /
+  PermissionDenied.
 * Remote (`isRemote`) sessions are ignored entirely.
 
 ### E.3 Drift correction and liveness (claude-app drives, Core decides)
 
-* `AgentsPoller` runs `<claudeExecutablePath or "claude"> agents --json --all` with
-  `SUPERNOTCH_INTERNAL=1`:
-  * at launch, on wake, and every 20 s **only while sessions exist**;
-  * with a 5 s timeout;
-  * and it gives up after 3 failures (the CLI is too old: log it and keep hooks-only).
-* `SessionFileWatcher`: a `DispatchSource` vnode watcher on `<config>/sessions/`, whose `<pid>.json` files
-  are undocumented. A file removal hints at a process exit, which is confirmed with `kill(pid, 0)`.
-* Liveness: every 10 s while sessions exist, `kill(pid, 0) == -1 && errno == ESRCH`, or a changed start
-  time (`proc_pidinfo` `PROC_PIDTBSDINFO`), gives `processExited`.
-* Desktop sessions without a pid: liveness follows `com.anthropic.claudefordesktop` running. If it quits,
-  all its sessions are removed.
+* **Liveness is event-driven.** One kqueue process-exit source per claude PID (its start time is checked
+  against PID reuse) gives `processExited`. A removed `<config>/sessions/<pid>.json` (undocumented;
+  `DispatchSource` vnode watcher) is a second exit hint, confirmed with `kill(pid, 0)`. After sleep or screen
+  unlock the app re-checks every pid once.
+* **Desktop sessions without a pid:** liveness follows `com.anthropic.claudefordesktop` running. If it quits,
+  the app sends `SessionEvent.sessionEnded` for each of them (removed, never parked).
+* **Drift correction is a slow fallback**, only while a visible session is 🟡 or 🔴: a `.tick` every 60 s, and
+  `claude agents --json --all` only when such a session has been silent for ≥ 60 s (backoff up to 5 min).
+  * It runs the session's own `claudeInvocation` / `claudeExecutablePath` (never a bare `claude`: the app runs
+    under launchd's PATH) with `SUPERNOTCH_INTERNAL=1` and a 5 s timeout, and gives up after 3 consecutive
+    failures (the CLI is too old: log it and keep hooks-only).
+  * It is paused while the Mac sleeps or the screen is locked, and the app filters headless pids
+    (`ClaudeProcess`) out of a snapshot before it can be adopted.
+* The store needs a `.tick` at least every minute while any session exists (stale flag, parked and hidden
+  expiry). The app currently drives ticks from the drift timer above, so 🟢-only sessions are expired at the
+  next 🟡/🔴 tick.
+* **Persistence (Core support):** `Session` is `Codable`, and `restoreSessions` / `restoreUsage` re-seed a
+  fresh store at launch (usage lives in `UserDefaults` key `sn.claude.usage`, §D.9). Restored sessions carry
+  no pending cards (their hook connections died with the old process); liveness and `claude agents` correct
+  anything stale.
 
 ### E.4 Title resolution
 
@@ -909,13 +958,21 @@ This follows REQUIREMENTS and `TitleResolver`. The order is:
 
 1. `custom-title` (transcript)
 2. `ai-title` (transcript)
-3. `session_title` (SessionStart)
+3. `session_title` (SessionStart, or the statusLine's `session_name`)
 4. `claude agents` `name` (unless it is a default name like `repo-3f`)
 5. the Haiku-generated title
 6. the first prompt (truncated)
 7. the project name
 
+Native titles longer than 4 words are shortened locally ("Fix flaky login test…"). Asking Haiku to compress them
+is opt-in (`compressLongNativeTitles`, default off).
+
 Haiku generation (claude-app `ClaudeTitleGenerator`):
+* **Only when Claude Code produced no title of its own.** Claude Code writes its `ai-title` in the background
+  shortly after the first prompt, so the store emits `titleGenerationNeeded` only after the first turn has
+  finished (Stop) **or** 30 s after the first prompt (`titleGenerationGrace`), and only once a transcript
+  re-read confirms that no native title exists (`TitleResolver.shouldRequestGeneration`). The generator
+  re-checks `TitleResolver.needsGeneration` right before spawning.
 * It runs at most once per session, is cached in `SuperNotchPaths.titleCache`, and only runs if
   `generateTitlesWithHaiku`. Titles are never written back.
 * The command is:
@@ -925,7 +982,7 @@ Haiku generation (claude-app `ClaudeTitleGenerator`):
   * It runs with `cwd` = a fresh empty temp dir, env `SUPERNOTCH_INTERNAL=1`, a 20 s timeout, and at most
     2 concurrent calls.
   * Prompt: "Summarise this coding task as a 2–4 word title. Reply with the title only.\n\n<text>".
-  * The output goes through `TitleResolver.shorten`. On failure, keep the fallback.
+  * The output goes through `TitleResolver.sanitizeGenerated` / `shorten`. On failure, keep the fallback.
 
 ---
 
@@ -1050,7 +1107,7 @@ nonisolated enum Log {
 
 | Stream | Must test |
 |---|---|
-| claude-core | State machine sequences, one fixture per known bug: #98 late PostToolUse, interrupt marker, permission resolution by PostToolUse and PermissionDenied, subagent counter, Desktop pre-warm, hidden internal/headless. Also: the settings merger (idempotent; refuses invalid JSON; keeps key order and unknown keys; uninstall; statusLine wrap/unwrap), titles, the transcript tail, agents decoding, NDJSON framing, decision JSON, and hook fail-open (run the hook binary with no socket → exit 0, empty stdout) |
+| claude-core | State machine sequences through a fixture-replay harness (`Fixtures/claude/seq-*.jsonl`, one sequence per known bug): #98 late PostToolUse vs a main-thread PreToolUse revive, interrupt marker, permission resolution by `tool_use_id`, PostToolUse and PermissionDenied, stale-card clearing, AskUserQuestion, subagent cards and counter, Desktop pre-warm and parking, agents adoption and grace, host-first visibility (Desktop / VS Code with `-p`, Cowork hidden), hidden internal/headless. Also: the settings merger (idempotent; refuses invalid JSON; keeps key order and unknown keys; version gate; no SessionEnd timeout; uninstall; statusLine wrap/unwrap), titles and Haiku timing, the transcript tail, agents decoding, NDJSON framing, decision JSON, and the real `supernotch-hook` binary (fail-open: no socket → exit 0, empty stdout; `statusline --wrap` exec; the default status line) |
 | notch-shell | `NotchGeometry` (14″/16″ fixtures, nil aux areas), `HoverIntent` (dwell, grace, slack), `PopupPolicy` (fullscreen, focus-aware, expanded queueing) |
 | media | `SpotifyScriptParser` (normal, ad, episode, local file, not running), `PlaybackSnapshot.position(at:)` |
 | shelf-clipboard | `RetentionPolicy` (pinned never expire, off, boundaries), `ClipboardCaptureFilter` (concealed, transient, own marker, ignored apps), dedupe/limit |
@@ -1080,7 +1137,8 @@ Triggers: push to any branch, and pull requests. Concurrency: `ci-${{ github.ref
 * **`Scripts/package_app.sh`:**
   1. Build release arm64.
   2. Assemble `dist/SuperNotch.app` (`MacOS/SuperNotch`, `Helpers/supernotch-hook`, `Info.plist` with the
-     version, `AppIcon.icns` from `Resources/AppIcon.png`).
+     version, `AppIcon.icns` from `Resources/AppIcon.png`, and `NOTICE` + `LICENSE` in `Resources/`: the About
+     pane shows NOTICE from there and links to GitHub otherwise).
   3. Sign inside-out with `$SIGN_IDENTITY`, falling back to ad-hoc `-`. No hardened runtime.
   4. `codesign --verify --strict`, and print the designated requirement.
   5. Package the zip via `ditto`, and the DMG via `hdiutil` UDZO.
@@ -1103,7 +1161,8 @@ Triggers: push to any branch, and pull requests. Concurrency: `ci-${{ github.ref
 2. **Glass may look foggy in a non-key panel.** Mitigation: the black gradient hides most of it, and the
    solid-black style is available. Test on a real Mac.
 3. **Permission race** between our card and the native terminal or Desktop prompt. Mitigation: resolve
-   the card via PostToolUse, PermissionDenied or a connection close.
+   the card via the PreToolUse `tool_use_id` link (PostToolUse, PostToolUseFailure, PermissionDenied), drop it
+   at every turn boundary (§E.1 card lifetime), or on a connection close.
 4. **`claude agents --json`** coverage of Desktop sessions is unverified. Mitigation: hooks first, and the
    poller is optional.
 5. **The `claude://` deep link to Desktop sessions is undocumented.** Mitigation: fall back to activating
@@ -1111,3 +1170,6 @@ Triggers: push to any branch, and pull requests. Concurrency: `ci-${{ github.ref
 6. **Global mouse monitors and the drag detector may need Accessibility on 26/27.** Mitigation: detect it
    and show it in onboarding.
 7. **Self-signed CI signing** may fail headless. Mitigation: ad-hoc fallback, so CI stays green.
+8. **Desktop parking and concurrent prompts are untested on a real Mac.** Claude Desktop may run one CLI
+   process per turn (§E.1 parking), and several cards may be pending at once. The reducer is covered by
+   fixture replays only. Mitigation: `SessionStoreConfiguration.desktopParkedLifetime` (0 disables parking).

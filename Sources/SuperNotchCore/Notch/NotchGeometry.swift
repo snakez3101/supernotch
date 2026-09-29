@@ -195,6 +195,16 @@ public struct NotchClosedWings: Sendable, Hashable {
             NotchMetrics.closedWings(
                 mode: mode, hasIslandContent: hasIslandContent, showsUsageWarning: showsUsageWarning))
     }
+
+    // Explicit (same on Linux and Apple platforms; see `NotchGeometry.==`).
+    public static func == (lhs: NotchClosedWings, rhs: NotchClosedWings) -> Bool {
+        lhs.leading == rhs.leading && lhs.trailing == rhs.trailing
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(leading)
+        hasher.combine(trailing)
+    }
 }
 
 // MARK: - Fullscreen heuristic (SPEC §A.8)
@@ -211,6 +221,17 @@ public struct NotchWindowSample: Sendable, Hashable {
         self.ownerPID = ownerPID
         self.layer = layer
         self.bounds = bounds
+    }
+
+    // Explicit: CGRect is not Hashable on Apple platforms (see `NotchGeometry.==`).
+    public static func == (lhs: NotchWindowSample, rhs: NotchWindowSample) -> Bool {
+        lhs.ownerPID == rhs.ownerPID && lhs.layer == rhs.layer && NotchCGComponents.equal(lhs.bounds, rhs.bounds)
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(ownerPID)
+        hasher.combine(layer)
+        NotchCGComponents.hash(bounds, into: &hasher)
     }
 }
 

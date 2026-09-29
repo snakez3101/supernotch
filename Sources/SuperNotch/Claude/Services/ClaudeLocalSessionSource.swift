@@ -4,9 +4,13 @@
 // * Hook socket (`ClaudeHookSocketServer`) → `.hook` / `.permissionConnectionClosed`.
 // * Liveness: one kqueue process-exit source per claude PID (no polling), plus a start-time check against
 //   PID reuse when the source is created. `<config>/sessions/` removals are a second exit hint.
-// * Drift correction (SPEC §E.3) is a slow fallback that runs only while a visible session is 🟡 or 🔴:
-//   every 60 s a `.tick`, and `claude agents --json --all` only when such a session has been silent for
-//   ≥ 60 s (backoff up to 5 min). Paused while the Mac sleeps or the screen is locked.
+// * `.tick` for the store's watchdog (stale rows, parked Desktop rows, title grace, hidden-session cleanup):
+//   every 30 s while a session is 🟡/🔴, every 2 min while only 🟢/idle/hidden sessions exist, never without
+//   sessions. Paused while the Mac sleeps or the screen is locked.
+// * `claude agents --json --all` (SPEC §E.3): once shortly after launch and after wake/unlock (adopts sessions
+//   that started while nothing was listening; headless and internal PIDs are dropped first), and as a slow
+//   drift fallback while a 🟡/🔴 session has been silent for ≥ 60 s (backoff up to 5 min). Gives up after 3
+//   consecutive failures.
 
 import Foundation
 import SuperNotchCore
@@ -28,23 +32,31 @@ final class ClaudeLocalSessionSource: SessionSource {
 
     /// Injected by the model (AppKit lives in `ClaudeSystemBridge`).
     var isDesktopAppRunning: () -> Bool = { true }
+    /// argv prefix of the user's Claude Code (latest `HookContext.claudeInvocation`), kept up to date by the model.
+    var claudeInvocation: [String]?
+    /// False in the smoke test (SPEC §D.10: never spawn `claude`).
+    var allowsAgentsPolling = true
 
     private var server: ClaudeHookSocketServer?
     private var sink: (@MainActor (SessionEvent) -> Void)?
     private let sessionFiles = ClaudeSessionFileWatcher()
     private var exitWatchers: [Int32: ClaudeProcessExitWatcher] = [:]
     private var knownSessions: [Session] = []
-    private var driftTask: Task<Void, Never>?
+    private var tickTask: Task<Void, Never>?
+    private var tickInterval: TimeInterval = 0
+    private var launchPollTask: Task<Void, Never>?
     private var isPaused = false
 
-    // `claude agents --json` (fallback only; give up after 3 consecutive failures, SPEC §E.3).
+    // `claude agents --json` (give up after 3 consecutive failures, SPEC §E.3).
     private var agentsFailures = 0
     private var agentsDisabled = false
     private var agentsRunning = false
     private var lastAgentsPoll: Date?
     private var agentsInterval: TimeInterval = ClaudeLocalSessionSource.minAgentsInterval
 
-    nonisolated static let driftInterval: TimeInterval = 60
+    nonisolated static let activeTickInterval: TimeInterval = 30
+    nonisolated static let idleTickInterval: TimeInterval = 120
+    nonisolated static let launchPollDelay: TimeInterval = 3
     nonisolated static let silenceBeforeAgentsPoll: TimeInterval = 60
     nonisolated static let minAgentsInterval: TimeInterval = 60
     nonisolated static let maxAgentsInterval: TimeInterval = 300
@@ -79,13 +91,22 @@ final class ClaudeLocalSessionSource: SessionSource {
             serverError = "\(error)"
             Log.ipc.error("hook socket failed to start: \(String(describing: error), privacy: .public)")
         }
+        // Sessions that were already running before SuperNotch started (app restart or update).
+        launchPollTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.launchPollDelay))
+            guard !Task.isCancelled, let self else { return }
+            self.launchPollTask = nil
+            self.pollAgentsIfNeeded(force: true)
+        }
     }
 
     func stop() {
         server?.stop()
         server = nil
         sink = nil
-        stopDriftTimer()
+        launchPollTask?.cancel()
+        launchPollTask = nil
+        stopTickTimer()
         sessionFiles.stop()
         for watcher in exitWatchers.values { watcher.cancel() }
         exitWatchers = [:]
@@ -112,7 +133,7 @@ final class ClaudeLocalSessionSource: SessionSource {
             sessionFiles.start(directory: ClaudePaths(configDirectory: configDirectory).sessionsDirectory)
             if !hadSessions { agentsInterval = Self.minAgentsInterval }
         }
-        updateDriftTimer()
+        updateTickTimer()
     }
 
     func setConfigDirectory(_ directory: String) {
@@ -124,21 +145,24 @@ final class ClaudeLocalSessionSource: SessionSource {
         }
     }
 
-    /// System sleep or screen lock: stop the drift timer (processes and hooks keep their own events).
+    /// System sleep or screen lock: no ticks and no agents polls (processes and hooks keep their own events).
     func setPaused(_ paused: Bool) {
         guard paused != isPaused else { return }
         isPaused = paused
         if paused {
-            stopDriftTimer()
+            stopTickTimer()
         } else {
             recheckAfterPause()
-            updateDriftTimer()
+            updateTickTimer()
         }
     }
 
-    /// Claude Desktop quit: its sessions without a PID are gone (sessions with a PID follow liveness).
+    /// Claude Desktop quit: every Desktop session ended with it (running ones would otherwise be parked).
     func handleDesktopTerminated() {
-        endPIDlessDesktopSessions()
+        let now = Date()
+        for session in knownSessions where session.host.kind == .claudeDesktop {
+            sink?(.sessionEnded(sessionID: session.id, now: now))
+        }
     }
 
     // MARK: - Delivery
@@ -202,74 +226,97 @@ final class ClaudeLocalSessionSource: SessionSource {
                 processExited(pid)
             }
         }
-        endPIDlessDesktopSessions()
+        endOrphanedDesktopSessions()
         agentsInterval = Self.minAgentsInterval
         pollAgentsIfNeeded(force: true)
     }
 
-    /// There is no reducer event for "session gone without a PID": send a synthetic SessionEnd.
-    private func endPIDlessDesktopSessions() {
+    /// Desktop sessions without a process (parked, or never had a pid) end when Claude Desktop is not running.
+    private func endOrphanedDesktopSessions() {
         let orphans = knownSessions.filter { $0.pid == nil && $0.host.kind == .claudeDesktop }
         guard !orphans.isEmpty, !isDesktopAppRunning() else { return }
         let now = Date()
         for session in orphans {
-            sink?(.hook(.synthetic(.sessionEnd, sessionID: session.id, now: now, fields: [("reason", "other")])))
+            sink?(.sessionEnded(sessionID: session.id, now: now))
         }
     }
 
-    // MARK: - Drift correction (slow fallback)
+    // MARK: - Watchdog tick
 
     /// Sessions whose state can drift: visible and 🟡 or 🔴.
     private var hasActiveWork: Bool {
         knownSessions.contains { $0.isVisible && ($0.phase == .working || $0.phase.isNeedsInput) }
     }
 
-    private func updateDriftTimer() {
-        if hasActiveWork && !isPaused {
-            guard driftTask == nil else { return }
-            driftTask = Task { [weak self] in
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(Self.driftInterval), tolerance: .seconds(15))
-                    guard !Task.isCancelled, let self else { return }
-                    self.driftTick()
-                }
+    private var desiredTickInterval: TimeInterval {
+        guard !isPaused, sink != nil, !knownSessions.isEmpty else { return 0 }
+        return hasActiveWork ? Self.activeTickInterval : Self.idleTickInterval
+    }
+
+    /// Starts, stops or re-paces the tick loop. A shorter interval restarts it; a longer one is picked up by
+    /// the running loop after its current sleep (so frequent 🟡 ⇄ 🟢 flips never postpone ticks).
+    private func updateTickTimer() {
+        let wanted = desiredTickInterval
+        guard wanted > 0 else {
+            stopTickTimer()
+            return
+        }
+        if tickTask != nil, wanted >= tickInterval {
+            tickInterval = wanted
+            return
+        }
+        stopTickTimer()
+        tickInterval = wanted
+        tickTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let interval = self?.tickInterval, interval > 0 else { return }
+                try? await Task.sleep(for: .seconds(interval), tolerance: .seconds(interval / 4))
+                guard !Task.isCancelled, let self else { return }
+                self.tick()
             }
-        } else {
-            stopDriftTimer()
         }
     }
 
-    private func stopDriftTimer() {
-        driftTask?.cancel()
-        driftTask = nil
+    private func stopTickTimer() {
+        tickTask?.cancel()
+        tickTask = nil
+        tickInterval = 0
     }
 
-    private func driftTick() {
+    private func tick() {
         sink?(.tick)
-        endPIDlessDesktopSessions()
+        endOrphanedDesktopSessions()
         pollAgentsIfNeeded(force: false)
     }
 
-    /// Polls `claude agents --json --all` when a 🟡/🔴 session has been silent for a while (with backoff).
+    // MARK: - claude agents --json
+
+    /// `force`: launch / wake (always, to adopt sessions). Otherwise only while a 🟡/🔴 session has been silent
+    /// for a while, with backoff.
     private func pollAgentsIfNeeded(force: Bool) {
-        guard !agentsDisabled, !agentsRunning, hasActiveWork else { return }
+        guard allowsAgentsPolling, !agentsDisabled, !agentsRunning, !isPaused, sink != nil else { return }
         let now = Date()
         if !force {
+            guard hasActiveWork else { return }
             if let last = lastAgentsPoll, now.timeIntervalSince(last) < agentsInterval { return }
             let silent = knownSessions.contains { session in
                 session.isVisible && (session.phase == .working || session.phase.isNeedsInput)
                     && now.timeIntervalSince(session.updatedAt) >= Self.silenceBeforeAgentsPoll
             }
             guard silent else { return }
+            agentsInterval = min(agentsInterval * 2, Self.maxAgentsInterval)
         }
         agentsRunning = true
         lastAgentsPoll = now
-        agentsInterval = min(agentsInterval * 2, Self.maxAgentsInterval)
         let home = homeDirectory
         let configDirectory = configDirectory
+        let invocation = claudeInvocation
         let hint = knownSessions.lazy.compactMap(\.claudeExecutablePath).first(where: ClaudeCLIEnvironment.isUsableHint)
+        let knownIDs = Set(knownSessions.map(\.id))
         Task { [weak self] in
-            let entries = await Self.runAgentsList(homeDirectory: home, configDirectory: configDirectory, hint: hint)
+            let entries = await Self.runAgentsList(
+                homeDirectory: home, configDirectory: configDirectory, invocation: invocation, hint: hint,
+                knownIDs: knownIDs)
             guard let self else { return }
             self.agentsRunning = false
             guard let entries else {
@@ -281,26 +328,35 @@ final class ClaudeLocalSessionSource: SessionSource {
                 return
             }
             self.agentsFailures = 0
+            guard !entries.isEmpty else { return }
             self.sink?(.agentsSnapshot(entries))
         }
     }
 
-    private nonisolated static func runAgentsList(homeDirectory: String, configDirectory: String, hint: String?)
-        async -> [AgentsListEntry]?
-    {
-        let environment = ClaudeCLIEnvironment.shared
-        return await Task.detached(priority: .utility) { () -> [AgentsListEntry]? in
-            guard let executable = environment.claudeExecutable(homeDirectory: homeDirectory, hint: hint),
+    /// Runs `claude agents --json --all` off the main thread. Entries for sessions the store does not know yet
+    /// (adoption candidates) are dropped when their process is headless or internal (SPEC §E.2).
+    private nonisolated static func runAgentsList(
+        homeDirectory: String, configDirectory: String, invocation: [String]?, hint: String?, knownIDs: Set<String>
+    ) async -> [AgentsListEntry]? {
+        let timeout = agentsTimeout
+        return await ClaudeBackground.run { () -> [AgentsListEntry]? in
+            let environment = ClaudeCLIEnvironment.shared
+            guard
+                let command = environment.claudeInvocation(
+                    homeDirectory: homeDirectory, reported: invocation, hint: hint),
+                let executable = command.first,
                 let output = ClaudeProcessRunner.runSync(
-                    executable: executable, arguments: ["agents", "--json", "--all"],
-                    environment: environment.environment(
-                        homeDirectory: homeDirectory, configDirectory: configDirectory),
-                    currentDirectory: homeDirectory, timeout: agentsTimeout),
+                    executable: executable, arguments: Array(command.dropFirst()) + ["agents", "--json", "--all"],
+                    environment: environment.environment(homeDirectory: homeDirectory, configDirectory: configDirectory),
+                    currentDirectory: homeDirectory, timeout: timeout),
                 output.succeeded,
-                output.stdout.first(where: { $0 != 0x20 && $0 != 0x0A && $0 != 0x09 && $0 != 0x0D }) == 0x5B  // "["
+                let entries = try? AgentsListEntry.decodeList(output.stdout)
             else { return nil }
-            return try? AgentsListEntry.decodeList(output.stdout)
-        }.value
+            return entries.filter { entry in
+                guard let id = entry.sessionId, !knownIDs.contains(id), let pid = entry.pid else { return true }
+                return !ClaudeProcessInspector.isHiddenClaudeProcess(pid: pid)
+            }
+        }
     }
 }
 
@@ -315,8 +371,10 @@ nonisolated final class ClaudeProcessExitWatcher: @unchecked Sendable {
     init(pid: Int32, onExit: @escaping @Sendable () -> Void) {
         #if canImport(Darwin)
             let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: Self.queue)
-            source.setEventHandler { [weak source] in
-                source?.cancel()
+            // Not class-bound (no `[weak source]`); cancelling in the handler (or `cancel()`/`deinit`) breaks
+            // the cycle.
+            source.setEventHandler {
+                source.cancel()
                 onExit()
             }
             self.source = source
