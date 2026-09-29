@@ -155,6 +155,39 @@ struct IPCTests {
         #expect(envelope.sentDate == Date(timeIntervalSince1970: 5))
     }
 
+    /// macOS gives secondary threads (GCD workers, the Swift concurrency pool that runs these tests and the app's
+    /// hook server) only 512 KB of stack, Linux 8 MB. The deepest document the parser accepts must survive the whole
+    /// hook → app pipeline on such a thread even in an unoptimised build: with a 512-level limit, parsing alone
+    /// overflowed it and killed the macOS test run with SIGBUS.
+    @Test func deepestAcceptedDocumentIsSafeOnA512KBStack() throws {
+        let depth = JSONValue.maxNestingDepth
+        let arrays = String(repeating: "[", count: depth) + String(repeating: "]", count: depth)
+        let objects = String(repeating: #"{"k":"#, count: depth) + "1" + String(repeating: "}", count: depth)
+        let problems = SmallStackThread.run(stackSize: 512 * 1024) { () -> [String] in
+            var problems: [String] = []
+            for text in [arrays, objects] {
+                do {
+                    let value = try JSONValue.parse(text)
+                    if value.serialized() != text { problems.append("serialized() changed the document") }
+                    if try JSONValue.parse(value.serialized(pretty: true)) != value { problems.append("pretty") }
+                    let payload = HookPayloadCompactor.compact(["session_id": "s", "tool_input": value])
+                    let envelope = HookEnvelope(
+                        id: "deep", sentAt: 1, event: .preToolUse, expectsReply: false, context: HookContext(),
+                        payload: payload)
+                    let decoded = try NDJSON.decodeLine(HookEnvelope.self, from: NDJSON.encodeLine(envelope))
+                    if decoded != envelope || decoded.hashValue != envelope.hashValue {
+                        problems.append("the envelope round trip changed the payload")
+                    }
+                } catch {
+                    problems.append("depth \(depth): \(error)")
+                }
+                if (try? JSONValue.parse("[" + text + "]")) != nil { problems.append("depth \(depth + 1) accepted") }
+            }
+            return problems
+        }
+        #expect(problems == [])
+    }
+
     @Test func eventNames() throws {
         #expect(HookEventName("SomethingNew").rawValue == "SomethingNew")
         #expect(try JSONDecoder().decode(HookEventName.self, from: Data(#""Stop""#.utf8)) == .stop)
@@ -162,5 +195,26 @@ struct IPCTests {
         #expect(!HookEventName.stop.supportsMatcher)
         #expect(HookEventName.baseEvents.allSatisfy { !HookEventName.extendedEvents.contains($0) })
         #expect(HookEventName.statusLine.minimumVersion == nil)
+    }
+}
+
+/// Runs `body` on a dedicated thread with a fixed stack size (like a macOS GCD worker's 512 KB) and waits for it.
+/// A stack overflow crashes the test process, on Linux as well as on macOS.
+enum SmallStackThread {
+    private final class Box<Value>: @unchecked Sendable {
+        var value: Value?
+        let done = DispatchSemaphore(value: 0)
+    }
+
+    static func run<Value>(stackSize: Int, _ body: @escaping @Sendable () -> Value) -> Value? {
+        let box = Box<Value>()
+        let thread = Thread {
+            box.value = body()
+            box.done.signal()
+        }
+        thread.stackSize = stackSize
+        thread.start()
+        guard box.done.wait(timeout: .now() + 60) == .success else { return nil }
+        return box.value
     }
 }

@@ -32,13 +32,26 @@ enum HookRunner {
         let input = StdinReader.readAll(timeout: IPCConfig.stdinReadTimeout, limit: maxStdinBytes)
         var context = HookContext(environment: environment, hookVersion: version)
         // Our own `claude -p` title calls / `claude agents` runs and cloud sessions are none of the app's business.
-        if context.isInternal || context.isRemote { return }
-        guard !input.isEmpty, let raw = try? JSONValue.parse(input), case .object = raw else {
-            debugLog("hook: empty or invalid stdin (\(input.count) bytes)")
+        if context.isInternal || context.isRemote {
+            debugLog("hook: not reported (internal: \(context.isInternal), remote: \(context.isRemote))")
+            return
+        }
+        let raw: JSONValue
+        do {
+            raw = try JSONValue.parse(input)
+        } catch {
+            debugLog("hook: unusable stdin (\(input.count) bytes): \(input.isEmpty ? "empty" : "\(error)")")
+            return
+        }
+        guard case .object = raw else {
+            debugLog("hook: stdin is not a JSON object (\(input.count) bytes)")
             return
         }
         let payload = HookPayloadCompactor.compact(raw)
-        guard let sessionID = payload["session_id"]?.stringValue, !sessionID.isEmpty else { return }
+        guard let sessionID = payload["session_id"]?.stringValue, !sessionID.isEmpty else {
+            debugLog("hook: payload has no session_id")
+            return
+        }
         let event = HookEventName(payload["hook_event_name"]?.stringValue ?? "Unknown")
         ProcessProbe.enrich(&context)
 
@@ -49,6 +62,8 @@ enum HookRunner {
         let envelope = HookEnvelope(
             id: UUID().uuidString, sentAt: Date().timeIntervalSince1970, event: event, expectsReply: expectsReply,
             context: context, payload: payload)
+        let waiting = expectsReply ? ", waiting up to \(replyTimeout) s for a decision" : ""
+        debugLog("hook: \(event) \(envelope.id)\(waiting)")
         guard let reply = send(envelope, expectReply: expectsReply) else { return }
         guard let decision = reply.decision else {
             debugLog("hook: passthrough for \(envelope.id)")
@@ -67,16 +82,21 @@ enum HookRunner {
         let input = StdinReader.readAll(timeout: IPCConfig.stdinReadTimeout, limit: maxStdinBytes)
         let context = HookContext(environment: environment, hookVersion: version)  // no process probe: runs often
         let payload = try? JSONValue.parse(input)
-        if !context.isInternal && !context.isRemote, let payload, case .object = payload {
+        if context.isInternal || context.isRemote {
+            debugLog("statusline: not reported (internal: \(context.isInternal), remote: \(context.isRemote))")
+        } else if let payload, case .object = payload {
             let envelope = HookEnvelope(
                 id: UUID().uuidString, sentAt: Date().timeIntervalSince1970, event: .statusLine, expectsReply: false,
                 context: context, payload: HookPayloadCompactor.compact(payload))
             send(envelope, expectReply: false)
+        } else {
+            debugLog("statusline: stdin is not a JSON object (\(input.count) bytes)")
         }
         if let original = wrappedCommand(in: arguments) {
             // exec(2) never returns; the large-input path returns the shell's exit status, which we adopt so both
             // paths look the same to Claude Code. nil: nothing could be started, so fail open (exit 0, no output).
             if let status = OriginalStatusLine.exec(command: original, stdin: input) { exit(status) }
+            debugLog("statusline: could not run the original command: \(Glue.describe(errno))")
             return
         }
         if let payload, let line = defaultStatusLine(payload) { StandardOutput.write(line + "\n") }
@@ -111,24 +131,38 @@ enum HookRunner {
     /// Sends one envelope. Returns the reply for blocking requests; nil on any failure (fail open).
     @discardableResult
     static func send(_ envelope: HookEnvelope, expectReply: Bool) -> HookReply? {
-        guard let line = try? NDJSON.encodeLine(envelope) else { return nil }
+        let line: Data
+        do {
+            line = try NDJSON.encodeLine(envelope)
+        } catch {
+            debugLog("send: cannot encode \(envelope.id): \(error)")
+            return nil
+        }
         let path = socketPath
-        guard let client = UnixSocketClient.connect(path: path, timeout: IPCConfig.connectTimeout) else {
-            debugLog("connect failed: \(path)")
+        guard let client = UnixSocketClient.connect(path: path, timeout: IPCConfig.connectTimeout, log: debugLog)
+        else {
+            debugLog("send: app not reachable, \(envelope.event) not delivered (fail open)")
             return nil
         }
         defer { client.close() }
-        guard client.writeAll(line, timeout: IPCConfig.writeTimeout) else {
-            debugLog("write failed")
+        guard client.writeAll(line, timeout: IPCConfig.writeTimeout, log: debugLog) else {
+            debugLog("send: \(envelope.event) not delivered (fail open)")
             return nil
         }
+        debugLog("send: delivered \(envelope.event) \(envelope.id) (\(line.count) bytes) to \(path)")
         guard expectReply else { return nil }
-        guard let replyLine = client.readLine(timeout: replyTimeout, maxBytes: IPCConfig.maxReplyBytes) else {
-            debugLog("no reply for \(envelope.id)")
+        guard
+            let replyLine = client.readLine(timeout: replyTimeout, maxBytes: IPCConfig.maxReplyBytes, log: debugLog)
+        else {
+            debugLog("send: no decision for \(envelope.id) (fail open)")
             return nil
         }
-        guard let reply = HookReply.parse(line: replyLine), reply.id == envelope.id else {
-            debugLog("invalid reply for \(envelope.id)")
+        guard let reply = HookReply.parse(line: replyLine) else {
+            debugLog("send: unparseable reply for \(envelope.id) (\(replyLine.count) bytes, fail open)")
+            return nil
+        }
+        guard reply.id == envelope.id else {
+            debugLog("send: reply is for \(reply.id), not \(envelope.id) (fail open)")
             return nil
         }
         return reply
@@ -146,15 +180,20 @@ enum HookRunner {
 
     // MARK: - Debug log (only with SUPERNOTCH_HOOK_DEBUG=1; never logs payload contents)
 
+    static let isDebugEnabled = environment[IPCConfig.hookDebugEnvironmentKey] == "1"
+
+    /// Says why the hook failed open (or what it delivered). Goes to stderr, which Claude Code only writes to its
+    /// debug log for a hook that exits 0 (and the tests capture), and is appended to
+    /// ~/Library/Logs/SuperNotch/hook.log.
     static func debugLog(_ message: String) {
-        guard environment[IPCConfig.hookDebugEnvironmentKey] == "1" else { return }
+        guard isDebugEnabled else { return }
+        let bytes = Array("\(Date().timeIntervalSince1970) supernotch-hook[\(getpid())] \(message)\n".utf8)
+        _ = bytes.withUnsafeBytes { Glue.write(2, $0.baseAddress, $0.count) }
         let directory = SuperNotchPaths(homeDirectory: NSHomeDirectory()).logsDirectory
         try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         let descriptor = open(directory + "/hook.log", O_WRONLY | O_CREAT | O_APPEND, 0o600)
         guard descriptor >= 0 else { return }
         defer { _ = Glue.close(descriptor) }
-        let line = "\(Date().timeIntervalSince1970) [\(getpid())] \(message)\n"
-        let bytes = Array(line.utf8)
         _ = bytes.withUnsafeBytes { Glue.write(descriptor, $0.baseAddress, $0.count) }
     }
 }
@@ -234,7 +273,11 @@ enum OriginalStatusLine {
             _ = Glue.close(writeEnd)
             guard dup2(readEnd, 0) >= 0 else { return nil }
             _ = Glue.close(readEnd)
+            // An ignored signal stays ignored across exec: give the user's command the default SIGPIPE back (main
+            // ignores it for our own socket and pipe writes), exactly as Claude Code would have started it.
+            signal(SIGPIPE, SIG_DFL)
             _ = withCStrings(arguments) { argv in execv("/bin/sh", argv) }
+            signal(SIGPIPE, SIG_IGN)
             return nil  // exec failed: print nothing (fail open)
         }
         return spawnAndFeed(arguments, readEnd: readEnd, writeEnd: writeEnd, remaining: Array(bytes[offset...]))
@@ -246,8 +289,10 @@ enum OriginalStatusLine {
     static func spawnAndFeed(_ arguments: [String], readEnd: Int32, writeEnd: Int32, remaining: [UInt8]) -> Int32? {
         #if canImport(Darwin)
             var actions: posix_spawn_file_actions_t?
+            var attributes: posix_spawnattr_t?
         #else
             var actions = posix_spawn_file_actions_t()
+            var attributes = posix_spawnattr_t()
         #endif
         guard posix_spawn_file_actions_init(&actions) == 0 else {
             _ = Glue.close(readEnd)
@@ -257,11 +302,24 @@ enum OriginalStatusLine {
         defer { posix_spawn_file_actions_destroy(&actions) }
         _ = posix_spawn_file_actions_adddup2(&actions, readEnd, 0)
         _ = posix_spawn_file_actions_addclose(&actions, writeEnd)
+        // Default SIGPIPE for the user's command (we ignore it ourselves; ignored signals survive exec).
+        guard posix_spawnattr_init(&attributes) == 0 else {
+            _ = Glue.close(readEnd)
+            _ = Glue.close(writeEnd)
+            return nil
+        }
+        defer { posix_spawnattr_destroy(&attributes) }
+        var defaultSignals = sigset_t()
+        sigemptyset(&defaultSignals)
+        sigaddset(&defaultSignals, SIGPIPE)
+        _ = posix_spawnattr_setsigdefault(&attributes, &defaultSignals)
+        _ = posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSIGDEF))
         var child: pid_t = 0
         let environment = ProcessInfo.processInfo.environment.map { "\($0.key)=\($0.value)" }
         let spawned =
             withCStrings(arguments) { argv in
-                withCStrings(environment) { envp in posix_spawn(&child, "/bin/sh", &actions, nil, argv, envp) } ?? -1
+                withCStrings(environment) { envp in posix_spawn(&child, "/bin/sh", &actions, &attributes, argv, envp) }
+                    ?? -1
             } ?? -1
         _ = Glue.close(readEnd)
         guard spawned == 0 else {

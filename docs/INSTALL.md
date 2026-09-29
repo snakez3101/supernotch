@@ -172,4 +172,4 @@ in the release notes. The certificate is valid for 10 years by default.
 | macOS job fails at *Build* | The job summary lists the first 50 compiler errors and adds annotations; the full `build.log` is uploaded as the `macos-logs` artifact. |
 | Xcode step fails: "No stable Xcode 26.x found" | The job is not running on `macos-26`, or the image dropped Xcode 26. |
 | Grants (Spotify, Accessibility) reset after every update | The build was ad-hoc signed (`cdhash` in the log). Configure the certificate. |
-| Hooks not firing | Settings > Claude shows the hook status. The helper lives at `~/Library/Application Support/SuperNotch/bin/supernotch-hook`; run it with `--version`. Set `SUPERNOTCH_HOOK_DEBUG=1` to log to `~/Library/Logs/SuperNotch/hook.log`. |
+| Hooks not firing | Settings > Claude shows the hook status. The helper lives at `~/Library/Application Support/SuperNotch/bin/supernotch-hook`; run it with `--version`. Set `SUPERNOTCH_HOOK_DEBUG=1` to log why the hook failed open (or what it delivered) to stderr and to `~/Library/Logs/SuperNotch/hook.log`. |

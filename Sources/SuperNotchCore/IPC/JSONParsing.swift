@@ -11,7 +11,18 @@ public struct JSONParseError: Error, Sendable, Hashable, CustomStringConvertible
 }
 
 extension JSONValue {
+    /// Deepest array/object nesting `parse` accepts; deeper documents throw `JSONParseError`.
+    ///
+    /// The parser, the writer, the compactor and `Codable` all recurse once per level (JSONEncoder/JSONDecoder
+    /// alone take ~2.7 KB per level), and background threads on macOS (GCD workers, the Swift concurrency pool,
+    /// where the app decodes hook messages) only have 512 KB of stack. At 512 levels parsing alone overflowed it in
+    /// a debug build (SIGBUS on macOS). 64 levels stay under 256 KB through the whole hook → app pipeline even
+    /// unoptimised, and real Claude Code payloads and settings files are far shallower. Callers fail open on the
+    /// error (the hook forwards nothing and Claude Code asks as usual).
+    public static let maxNestingDepth = 64
+
     /// Strict RFC 8259 parse (no comments, no trailing commas). Leading UTF-8 BOM is tolerated.
+    /// Documents nested deeper than `maxNestingDepth` are rejected.
     public static func parse(_ data: Data) throws -> JSONValue {
         var parser = Parser(bytes: Array(data))
         return try parser.parseDocument()
@@ -42,7 +53,7 @@ private struct Parser {
     let bytes: [UInt8]
     var index = 0
     var depth = 0
-    static let maxDepth = 512
+    static let maxDepth = JSONValue.maxNestingDepth
 
     init(bytes: [UInt8]) {
         self.bytes = bytes

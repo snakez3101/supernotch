@@ -109,7 +109,7 @@ enum ProcessProbe {
             guard sysctl(&mib, u_int(mib.count), nil, &size, nil, 0) == 0, size > 4 else { return (nil, []) }
             var buffer = [UInt8](repeating: 0, count: size)
             guard sysctl(&mib, u_int(mib.count), &buffer, &size, nil, 0) == 0, size > 4 else { return (nil, []) }
-            let argc = buffer.withUnsafeBytes { $0.load(as: Int32.self) }
+            let argc = buffer.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }  // no alignment assumption
             var index = 4
             let pathStart = index
             while index < size && buffer[index] != 0 { index += 1 }
