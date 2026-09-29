@@ -1,6 +1,7 @@
 // Owner: media stream. Runs AppleScript for Spotify on ONE dedicated serial background queue (SPEC §F.1).
 import AppKit
 import ApplicationServices
+import CoreServices
 import Foundation
 import SuperNotchCore
 

@@ -4,8 +4,10 @@
 name: CI
 
 on:
+  # Branch work is built through its pull request; pushing to main builds main. This avoids running
+  # the (slow) macOS job twice for the same commit (once for `push`, once for `pull_request`).
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
   workflow_dispatch:
 

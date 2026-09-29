@@ -133,6 +133,33 @@ public struct NotchGeometry: Sendable, Hashable {
         abs(frame.minX - screenFrame.minX) < 1 && abs(frame.minY - screenFrame.minY) < 1
             && abs(frame.width - screenFrame.width) < 1 && abs(frame.height - screenFrame.height) < 1
     }
+
+    // Explicit Equatable/Hashable: CGRect is Hashable on Linux but not on Apple platforms, so the synthesized
+    // conformances would not compile there. Components are compared and hashed instead.
+    public static func == (lhs: NotchGeometry, rhs: NotchGeometry) -> Bool {
+        NotchCGComponents.equal(lhs.screenFrame, rhs.screenFrame)
+            && NotchCGComponents.equal(lhs.notchRect, rhs.notchRect)
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        NotchCGComponents.hash(screenFrame, into: &hasher)
+        NotchCGComponents.hash(notchRect, into: &hasher)
+    }
+}
+
+/// Component-wise equality and hashing of CoreGraphics values (see `NotchGeometry.==`).
+private enum NotchCGComponents {
+    static func equal(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
+        lhs.origin.x == rhs.origin.x && lhs.origin.y == rhs.origin.y
+            && lhs.size.width == rhs.size.width && lhs.size.height == rhs.size.height
+    }
+
+    static func hash(_ rect: CGRect, into hasher: inout Hasher) {
+        hasher.combine(rect.origin.x)
+        hasher.combine(rect.origin.y)
+        hasher.combine(rect.size.width)
+        hasher.combine(rect.size.height)
+    }
 }
 
 // MARK: - Closed wings

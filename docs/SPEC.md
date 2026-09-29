@@ -589,7 +589,9 @@ usually does not see the user's shell `CLAUDE_CONFIG_DIR`. The hook reports the 
 
 Command string: `ShellQuote.quote(hookBinaryPath) + " hook"`, for example:
 `'/Users/me/Library/Application Support/SuperNotch/bin/supernotch-hook' hook`.
-Our entries are identified by the substring `SuperNotch/bin/supernotch-hook`.
+Our entries are identified by the substring `SuperNotch/bin/supernotch-hook`
+(`HookSettingsMerger.isOurCommand` also recognises any `supernotch-hook … hook|statusline` command of a dev
+build or a moved install, so we never wrap ourselves).
 
 Entries merged into `settings.json` (one matcher group per event, appended; never reorders or removes
 other hooks):
@@ -598,7 +600,7 @@ other hooks):
 {
   "hooks": {
     "SessionStart":      [{ "matcher": "*", "hooks": [{ "type": "command", "command": "'…/supernotch-hook' hook", "timeout": 10 }] }],
-    "SessionEnd":        [{ "matcher": "*", "hooks": [{ "type": "command", "command": "'…/supernotch-hook' hook", "timeout": 10 }] }],
+    "SessionEnd":        [{ "matcher": "*", "hooks": [{ "type": "command", "command": "'…/supernotch-hook' hook" }] }],   // no timeout
     "UserPromptSubmit":  [{               "hooks": [{ "type": "command", "command": "'…/supernotch-hook' hook", "timeout": 10 }] }],
     "PreToolUse":        [{ "matcher": "*", "hooks": [ … timeout 10 ] }],
     "PostToolUse":       [{ "matcher": "*", "hooks": [ … timeout 10 ] }],
@@ -607,12 +609,28 @@ other hooks):
     "Stop":              [{               "hooks": [ … ] }],
     "SubagentStop":      [{ "matcher": "*", "hooks": [ … ] }],
     "PreCompact":        [{ "matcher": "*", "hooks": [ … ] }]
-    // + extended events when claude --version ≥ 2.1.0:
+    // + extended events only when claude --version ≥ 2.1.101:
     // PostToolUseFailure, PermissionDenied, StopFailure, SubagentStart, PostCompact
   },
   "statusLine": { "type": "command", "command": "'…/supernotch-hook' statusline" }   // only if the bridge is enabled
+  // with a statusLine of the user's own:  "command": "'…/supernotch-hook' statusline --wrap '<their command>'"
 }
 ```
+
+Event set and version gate (`HookInstallSpec.make(hookBinaryPath:claudeVersion:wrapStatusLine:)`,
+`HookEventName.baseEvents / extendedEvents / minimumVersion`):
+
+* An unknown `claude --version` installs the **base events** only: SessionStart, SessionEnd,
+  UserPromptSubmit, PreToolUse, PostToolUse, PermissionRequest, Notification, Stop, SubagentStop, PreCompact.
+  A known version also drops base events it predates (per-event minimum versions from the Claude Code
+  changelog, e.g. PermissionRequest 2.0.45, SessionEnd 1.0.85).
+* The **extended events** (PostToolUseFailure, PermissionDenied, StopFailure, SubagentStart, PostCompact) are
+  written only from **Claude Code 2.1.101** on. Before that, one unrecognised event name made Claude Code
+  ignore the whole `settings.json`. Their own minimums are lower (SubagentStart 2.0.43, PostCompact 2.1.76,
+  StopFailure 2.1.78, PermissionDenied 2.1.89), but the gate is the higher 2.1.101.
+* Timeouts: PermissionRequest 300 s (`IPCConfig.permissionHookTimeout`), all others 10 s, and **SessionEnd gets
+  no `timeout` key**. Claude Code raises its whole exit budget (default 1.5 s) to the highest per-hook
+  SessionEnd timeout, and our hook needs a few milliseconds.
 
 Installer rules (`HookSettingsMerger`, pure, tested):
 * Parse strictly with `JSONValue.parse`. Invalid JSON: **refuse** and report; never overwrite.
@@ -621,7 +639,11 @@ Installer rules (`HookSettingsMerger`, pure, tested):
   event array or `hooks` object that becomes empty *only if we created it* (tracked in `HookManifest`).
 * statusLine bridge:
   * The user's original `statusLine` object is saved in `HookManifest.originalStatusLine`.
-  * Ours is set in its place. On uninstall the original is restored.
+  * Ours is set in its place, keeping their other keys (`padding`, `refreshInterval`, …):
+    * no original: `'…/supernotch-hook' statusline`;
+    * with an original command: `'…/supernotch-hook' statusline --wrap '<their command>'` (their command is
+      shell-quoted into one argument; `HookInstallSpec.statusLineCommand(wrapping:)`).
+  * On uninstall the original is restored. If the manifest is lost, it is rebuilt from the `--wrap` argument.
   * Never wrap our own command (Open Island #671).
 * IO (claude-app, `HookInstaller`):
   1. Back up to `~/Library/Application Support/SuperNotch/Backups/settings.json.<ISO8601>.bak`.
@@ -638,28 +660,44 @@ Installer rules (`HookSettingsMerger`, pure, tested):
   * The app creates it with mode 0600, and unlinks a stale file first.
 * **Framing:** NDJSON (`NDJSON.encodeLine`). One `HookEnvelope` per connection, hook → app.
 * **Envelope:** `{ v, id, sentAt, event, expectsReply, context: HookContext, payload: <raw stdin JSON> }`.
-* **Non-blocking events** (everything except PermissionRequest): the hook connects (100 ms timeout),
-  writes one line, closes, prints nothing and exits 0.
+* **Internal and remote sessions:** the hook exits at once, without connecting, when `SUPERNOTCH_INTERNAL=1`
+  (our own Haiku and `claude agents` runs) or `CLAUDE_CODE_REMOTE` is set. Payloads are compacted before they
+  are sent (`HookPayloadCompactor`: `tool_response` dropped, strings over 16 KiB truncated).
+* **Non-blocking events** (everything except a PermissionRequest that expects a reply): the hook connects
+  (100 ms timeout), writes one line, closes, prints nothing and exits 0.
 * **PermissionRequest** (`expectsReply = true`):
-  * The hook keeps the connection open and waits up to `IPCConfig.permissionReplyTimeout` (290 s) for one
-    `HookReply` line `{ v, id, decision }`.
+  * The hook holds the connection open only when `HookContext.shouldAwaitPermissionReply` allows it: not for
+    internal, remote or headless sessions (§E.2), and never for `AskUserQuestion` (its dialog is the prompt;
+    the app only marks the row red). Those are sent with `expectsReply = false` and Claude Code decides alone.
+    A subagent's request does wait: it becomes a card on the parent session.
+  * It waits up to `IPCConfig.permissionReplyTimeout` (290 s) for one `HookReply` line `{ v, id, decision }`.
   * If `decision` is non-nil, the hook prints `decision.hookStdout` and exits 0.
   * If it is nil, or on timeout, EOF or any error, the hook prints nothing and exits 0, so Claude Code
     shows its own prompt (**fail open**).
 * **App side:**
   * When the user answers, send the `HookReply`, then close.
-  * If the request is hidden or not answerable (internal, headless or subagent session): reply
-    `decision: nil` immediately (`SessionEffect.replyPassthrough`).
-  * If the peer closes first: `SessionEvent.permissionConnectionClosed`.
-* **statusLine bridge** (`supernotch-hook statusline`):
+  * If the request is hidden, not answerable, or `AskUserQuestion`: reply `decision: nil` immediately
+    (`SessionEffect.replyPassthrough`).
+  * The store also emits `replyPassthrough` for every card it drops because the turn moved on (§E.1: new
+    prompt, Stop, StopFailure, `idle_prompt`, interrupt, PostToolUse for the same call, session end).
+  * If the peer closes first: `SessionEvent.permissionConnectionClosed`. After our own 290 s timeout the row
+    stays 🔴, because the native prompt is still up.
+  * If no card can be shown at all, reply with a passthrough (claude-app).
+* **statusLine bridge** (`supernotch-hook statusline [--wrap '<original command>']`):
   1. Reads the statusLine JSON from stdin.
-  2. Sends an envelope with `event = "StatusLine"` (non-blocking).
-  3. Runs the original statusLine command from the manifest via `/bin/sh -c` with the same stdin, and
-     prints its stdout. With no original, it prints nothing. Total budget: 1 s.
-* **Hook context enrichment:** the hook walks up to 8 parent processes (`proc_pidinfo`/`sysctl` on macOS;
-  `/proc` on Linux) to find the `claude` process (argv0 basename `claude`, or a node process whose argv
-  contains `claude`). From it the hook records `claudePID`, `claudeStartTime`, `claudeExecutablePath`,
-  `tty` and `isPrintMode` (argv contains `-p` or `--print`). Environment fields come from
+  2. Sends an envelope with `event = "StatusLine"` (non-blocking; rate limits and `session_name`).
+  3. With `--wrap`, it **execs** `/bin/sh -c '<original command>'` with the same stdin (a pipe pre-filled with
+     the JSON). There is no relaying and no 1 s budget: Claude Code reads the original's stdout and cancels
+     it directly, exactly as without the bridge. If the exec fails it prints nothing.
+  4. Without an original command it prints a minimal line, `Model · N% context` (for example
+     `Opus 4.7 · 42% context`), so the status line is never blank.
+* **Hook context enrichment:** the hook walks up to 16 parent processes (`proc_pidinfo`/`sysctl` on macOS;
+  `/proc` on Linux) to find the `claude` process (`ClaudeProcess.isClaude`: argv0 `claude`, the native
+  installer path, or a node/bun process running the CLI script). From it the hook records `claudePID`,
+  `claudeStartTime`, `claudeExecutablePath`, `claudeInvocation` (argv prefix that re-runs this install, since
+  the app runs under launchd's PATH), `tty`, `isPrintMode` (argv contains `-p` or `--print`), `processChain`
+  (ancestors up to launchd) and `hostAppPath` (the `.app` of the nearest GUI ancestor). Environment fields
+  (`entrypoint`, `hostSessionID`, `bundleIdentifier`, `TERM_PROGRAM`, …) come from
   `HookContext(environment:hookVersion:)`.
 * **Performance budget:** the hook must finish in under 30 ms for non-blocking events. No Foundation
   `Process`, no network, no file writes unless `SUPERNOTCH_HOOK_DEBUG=1`.
