@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "entries": [
+    { "id": "AAAAAAAA-0000-0000-0000-000000000001", "content": { "text": { "_0": "hello" } }, "capturedAt": 780000300, "pinned": false, "contentHash": "abc", "sourceAppBundleID": "com.apple.Safari", "sourceAppName": "Safari" },
+    { "id": "AAAAAAAA-0000-0000-0000-000000000002", "content": { "image": { "relativePath": "images/AAAAAAAA-0000-0000-0000-000000000002.png", "pixelWidth": 10, "pixelHeight": 20 } }, "capturedAt": 780000200, "pinned": true, "contentHash": "img-1" },
+    { "id": "AAAAAAAA-0000-0000-0000-000000000003", "content": { "image": { "relativePath": "../outside.png", "pixelWidth": 10, "pixelHeight": 20 } }, "capturedAt": 780000100, "pinned": false, "contentHash": "img-2" },
+    { "id": "AAAAAAAA-0000-0000-0000-000000000004", "content": { "unknownCase": { "_0": 1 } }, "capturedAt": 780000000, "pinned": false, "contentHash": "x" },
+    { "id": "AAAAAAAA-0000-0000-0000-000000000005", "content": { "files": { "_0": ["/Users/me/a.txt", "/Users/me/b.txt"] } }, "capturedAt": 779000000, "pinned": false, "contentHash": "f" }
+  ]
+}

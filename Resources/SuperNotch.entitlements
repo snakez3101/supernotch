@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  SuperNotch entitlements (owner: FOUNDATION, see docs/SPEC.md G.3).
+
+  The app is deliberately NOT sandboxed: it reads and writes ~/.claude (Claude Code hooks, sessions,
+  transcripts), keeps a Unix socket under ~/Library/Application Support/SuperNotch and drives Spotify via
+  Apple Events. There is no com.apple.security.app-sandbox key on purpose.
+
+  The hardened runtime is not enabled either (no notarization without an Apple Developer account, and
+  library validation would only get in the way of ad-hoc / self-signed builds). The Apple Events entitlement
+  below only takes effect under the hardened runtime, but declaring it keeps the app ready for a future
+  Developer ID build without changing anything else.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+</dict>
+</plist>

@@ -1,0 +1,13 @@
+{
+  "html": "<iframe></iframe>",
+  "width": 456,
+  "height": 352,
+  "version": "1.0",
+  "provider_name": "Spotify",
+  "provider_url": "https://spotify.com",
+  "type": "rich",
+  "title": "Bohemian Rhapsody",
+  "thumbnail_url": "http://image-cdn-ak.spotifycdn.com/image/ab67616d00001e02e8b066f70c206551210d902b",
+  "thumbnail_width": 300,
+  "thumbnail_height": 300
+}

@@ -1,0 +1,129 @@
+SuperNotch
+Copyright 2026 The SuperNotch contributors
+https://github.com/snakez3101/supernotch
+
+This product is licensed under the Apache License, Version 2.0 (see the LICENSE file).
+
+SuperNotch has no third-party package dependencies: it is built only on Apple's system frameworks (SwiftUI,
+AppKit, Foundation, Carbon) and the Swift standard library / swift-testing.
+
+SuperNotch is an independent project. It is not affiliated with, endorsed by or sponsored by Apple Inc.,
+Spotify AB or Anthropic PBC. "macOS", "AirDrop", "Liquid Glass" and "Apple Silicon" are trademarks of Apple Inc.;
+"Spotify" is a trademark of Spotify AB; "Claude" and "Claude Code" are trademarks of Anthropic PBC.
+
+--------------------------------------------------------------------------------------------------------------
+Third-party attributions
+--------------------------------------------------------------------------------------------------------------
+
+Parts of SuperNotch are adapted from, or follow patterns of, the open-source projects below. Each entry names
+the project, its licence and what was taken from it. The full licence texts of the MIT projects are reproduced
+underneath. No third-party package is linked into SuperNotch.
+
+* DynamicNotchKit (https://github.com/MrKai77/DynamicNotchKit)
+  Licence: MIT
+  Copyright (c) 2025 Kai Azim
+  Adapted in: Sources/SuperNotch/Notch/NotchShape.swift, Sources/SuperNotch/Notch/NotchPanel.swift
+  What: the NotchShape outline (quad-curve notch path) and the panel configuration (borderless, non-activating,
+  transparent panel above the menu bar).
+
+* NotchDrop (https://github.com/Lakr233/NotchDrop)
+  Licence: MIT
+  Copyright (c) 2024 Lakr Aream
+  Adapted in: Sources/SuperNotch/System/NotchScreenLocator.swift
+  What: built-in display detection (finding the notch screen among NSScreen.screens).
+
+* Claude Island, also known as Vibe Notch (https://github.com/farouqaldori/claude-island)
+  Licence: Apache-2.0 (http://www.apache.org/licenses/LICENSE-2.0)
+  Copyright 2025 Farouq Aldori
+  Adapted in: Sources/SuperNotch/Notch/NotchPanel.swift
+  What: the pass-through hosting view pattern (an NSHostingView whose hitTest only accepts the current notch
+  shape, so clicks elsewhere in the panel reach the windows below). The project ships no NOTICE file of its own.
+  This is the same licence as SuperNotch itself (see the LICENSE file).
+
+* Maccy (https://github.com/p0deje/Maccy)
+  Licence: MIT
+  Copyright (c) 2025 Alex Rodionov
+  Adapted in: Sources/SuperNotch/Clipboard/ClipboardPasteService.swift
+  What: the pasteboard marker type written with our own pasteboard writes (so they are never captured again),
+  writeObjects for file URLs, and the CGEvent Cmd+V paste pattern.
+
+Other notch, Claude Code and media apps (boring.notch, Atoll, notchi, open-vibe-island, mew-notch, notchy,
+CodexBar, mediaremote-adapter) were read as design references only. No code was copied from them.
+
+--------------------------------------------------------------------------------------------------------------
+DynamicNotchKit: MIT License
+--------------------------------------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2025 Kai Azim
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------------------------------------------------------------------------------------------------
+NotchDrop: MIT License
+--------------------------------------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2024 Lakr Aream
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------------------------------------------------------------------------------------------------
+Maccy: MIT License
+--------------------------------------------------------------------------------------------------------------
+
+The MIT License (MIT)
+
+Copyright (c) 2025 Alex Rodionov
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.

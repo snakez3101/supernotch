@@ -1,0 +1,31 @@
+# SwiftPM / Xcode
+.build/
+.swiftpm/
+/Packages
+*.xcodeproj
+xcuserdata/
+DerivedData/
+Package.resolved.orig
+
+# Packaging output
+dist/
+*.dmg
+*.p12
+*.pem
+*.cer
+build.log
+
+# macOS
+.DS_Store
+
+# Signing material (Scripts/make_selfsigned_cert.sh output, must never be committed)
+supernotch-signing/
+*.key
+*.keychain
+*.keychain-db
+
+# CI / packaging logs
+test.log
+package.log
+format.log
+*.icns

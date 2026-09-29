@@ -1,0 +1,8 @@
+# Usage limits from the statusLine bridge: an older report never lowers a newer one within the same window.
+{"t": 0, "statusline": {"session_id": "S1", "rate_limits": {"five_hour": {"used_percentage": 23.5, "resets_at": 1800003600}, "seven_day": {"used_percentage": 41.2, "resets_at": 1800400000}}}, "expect": {"effects": ["usageUpdated"], "usage": {"fiveHour": 23.5, "sevenDay": 41.2}}}
+{"t": 1, "statusline": {"session_id": "S2", "rate_limits": {"five_hour": {"used_percentage": 10, "resets_at": 1800003600}}}, "expect": {"noEffects": ["usageUpdated"], "usage": {"fiveHour": 23.5, "sevenDay": 41.2}}}
+{"t": 2, "statusline": {"session_id": "S1", "rate_limits": {"five_hour": {"used_percentage": "30", "resets_at": 1800003600}}}, "expect": {"effects": ["usageUpdated"], "usage": {"fiveHour": 30, "sevenDay": 41.2}}}
+{"t": 3, "statusline": {"session_id": "S1", "model": {"display_name": "Opus"}}, "expect": {"noEffects": ["usageUpdated"]}}
+# Window reset: a report with a later resets_at starts a new window
+{"t": 3700, "tick": true, "expect": {"effects": ["usageUpdated"], "usage": {"fiveHour": null, "sevenDay": 41.2}}}
+{"t": 3701, "statusline": {"session_id": "S1", "rate_limits": {"five_hour": {"used_percentage": 2, "resets_at": 1800021600}}}, "expect": {"effects": ["usageUpdated"], "usage": {"fiveHour": 2, "sevenDay": 41.2}}}

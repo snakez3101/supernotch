@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/old/Library/Application Support/SuperNotch/bin/supernotch-hook' hook",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "say done"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/old/Library/Application Support/SuperNotch/bin/supernotch-hook' hook",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "'/Users/old/Library/Application Support/SuperNotch/bin/supernotch-hook' statusline --wrap '~/.claude/statusline.sh --compact'",
+    "padding": 2
+  }
+}

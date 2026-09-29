@@ -1,0 +1,12 @@
+# Stale watchdog, dead processes, late hooks after the end, resume, hidden-session expiry.
+{"t": 0, "ctx": "internal", "hook": {"session_id": "H", "transcript_path": "/Users/me/.claude/projects/-tmp-t/H.jsonl", "cwd": "/tmp/t", "permission_mode": "default", "hook_event_name": "UserPromptSubmit", "prompt": "x"}}
+{"t": 1, "hook": {"session_id": "S1", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S1.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "UserPromptSubmit", "prompt": "run the full test suite"}, "expect": {"phase": {"S1": "working"}}}
+{"t": 300, "tick": true, "expect": {"stale": {"S1": false}}}
+{"t": 700, "tick": true, "expect": {"stale": {"S1": true}, "phase": {"S1": "working"}}}
+{"t": 701, "hook": {"session_id": "S1", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S1.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "npm test"}, "tool_use_id": "t1"}, "expect": {"stale": {"S1": false}}}
+{"t": 800, "exited": 4242, "expect": {"phase": {"S1": "absent"}, "effects": ["sessionRemoved:S1"]}}
+{"t": 801, "hook": {"session_id": "S1", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S1.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "Stop", "last_assistant_message": "late"}, "expect": {"phase": {"S1": "absent"}, "noEffects": ["sessionAppeared:S1"]}}
+{"t": 900, "hook": {"session_id": "S1", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S1.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "SessionStart", "source": "resume"}, "expect": {"phase": {"S1": "idle"}, "effects": ["sessionAppeared:S1"]}}
+{"t": 901, "hook": {"session_id": "S1", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S1.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "SessionEnd", "reason": "other"}, "expect": {"phase": {"S1": "absent"}}}
+{"t": 902, "hook": {"session_id": "S1", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S1.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "PostToolUse", "tool_name": "Read", "tool_input": {"file_path": "/a"}, "tool_use_id": "t2"}, "expect": {"phase": {"S1": "absent"}}}
+{"t": 3700, "tick": true, "expect": {"phase": {"H": "absent"}, "noEffects": ["sessionRemoved:H"]}}

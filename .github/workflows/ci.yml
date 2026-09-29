@@ -1,0 +1,136 @@
+# SuperNotch CI (docs/SPEC.md G.2).
+#   linux : fast + cheap. Builds and tests SuperNotchCore, syntax-checks the AppKit/SwiftUI sources.
+#   macos : the real compile against the macOS 26 SDK, tests, packaging (signed), smoke test, artifact.
+name: CI
+
+on:
+  # Branch work is built through its pull request; pushing to main builds main. This avoids running
+  # the (slow) macOS job twice for the same commit (once for `push`, once for `pull_request`).
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux (Swift ${{ matrix.swift }})
+    runs-on: ubuntu-latest
+    # 6.2 = the compiler generation of Xcode 26.0-26.3; 6.3 = what current Xcode 26.x ships.
+    container: swift:${{ matrix.swift }}-noble
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        swift: ['6.2', '6.3']
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Toolchain
+        run: swift --version
+
+      - name: Build
+        run: swift build 2>&1 | tee build.log
+
+      - name: Build the hook helper
+        run: swift build --product supernotch-hook 2>&1 | tee -a build.log
+
+      - name: Test
+        run: swift test 2>&1 | tee test.log
+
+      - name: Syntax-check the app sources (swiftc -parse, no SDK needed)
+        run: |
+          count=$(find Sources/SuperNotch -name '*.swift' | wc -l | tr -d ' ')
+          echo "Parsing $count Swift files in Sources/SuperNotch"
+          find Sources/SuperNotch -name '*.swift' -print0 | xargs -0 -r swiftc -parse
+
+      - name: swift-format lint (non-blocking)
+        run: |
+          swift format lint --recursive Sources Tests >format.log 2>&1 || true
+          echo "swift-format: $(grep -c 'warning:' format.log || true) style warnings (non-blocking)"
+          head -n 40 format.log
+
+      - name: Summarize errors
+        if: failure()
+        run: bash Scripts/ci_error_summary.sh build.log test.log
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-swift-${{ matrix.swift }}-logs
+          path: |
+            build.log
+            test.log
+          if-no-files-found: ignore
+
+  macos:
+    name: macOS 26 (build, test, package)
+    needs: linux
+    runs-on: macos-26
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select Xcode 26
+        run: bash Scripts/ci_select_xcode.sh
+
+      - name: Build (release, arm64)
+        run: swift build -c release --arch arm64 2>&1 | tee build.log
+
+      - name: Test
+        run: swift test 2>&1 | tee test.log
+
+      - name: Import signing certificate (optional)
+        env:
+          SIGNING_P12_BASE64: ${{ secrets.SIGNING_P12_BASE64 }}
+          SIGNING_P12_PASSWORD: ${{ secrets.SIGNING_P12_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.SIGNING_IDENTITY }}
+        run: bash Scripts/ci_import_cert.sh
+
+      - name: Package (sign, zip, dmg) and smoke test
+        id: package
+        env:
+          VERSION: 0.0.0-ci.${{ github.run_number }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: bash Scripts/package_app.sh --smoke-test 2>&1 | tee package.log
+
+      - name: Upload app (zip)
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.package.outputs.zip }}
+          archive: false # upload the ditto zip as-is: no zip-in-zip, keeps symlinks, exec bits and the signature
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Summarize errors
+        if: failure()
+        run: bash Scripts/ci_error_summary.sh build.log test.log package.log
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-logs
+          path: |
+            build.log
+            test.log
+            package.log
+          if-no-files-found: ignore
+
+      - name: Remove temporary keychain
+        if: always()
+        run: |
+          if [[ -n "${SIGN_KEYCHAIN:-}" ]]; then security delete-keychain "$SIGN_KEYCHAIN" || true; fi

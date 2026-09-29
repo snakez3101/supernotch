@@ -1,0 +1,8 @@
+Update available: 2.1.285 (run `claude update`)
+[
+  {"cwd":"/Users/me/app","kind":"interactive","startedAt":1790000000000,"pid":4242,"status":"busy","sessionId":"0d6f1c2e-1111-4a5b-8c9d-000000000001","name":"app-3f"},
+  {"cwd":"/Users/me/api","kind":"interactive","startedAt":1790000100000,"pid":4343,"status":"waiting","waitingFor":"permission prompt","sessionId":"0d6f1c2e-1111-4a5b-8c9d-000000000002","name":"Fix rate limiter"},
+  {"cwd":"/Users/me/bg","kind":"background","startedAt":1790000200000,"id":"b7","state":"working","status":"idle","sessionId":"0d6f1c2e-1111-4a5b-8c9d-000000000003","name":"nightly triage"},
+  {"cwd":"/Users/me/bg","kind":"background","startedAt":1790000300000,"id":"b8","state":"failed"},
+  {"cwd":42,"kind":"interactive","pid":"4444","status":"idle","sessionId":"0d6f1c2e-1111-4a5b-8c9d-000000000004","extra":{"nested":[1,2]}}
+]
