@@ -37,13 +37,59 @@ public enum SpotifyScriptParser {
     /// inside the script is not atomic, so the caller ALSO checks `NSRunningApplication` first): a bare
     /// `tell application "Spotify"` would launch Spotify.
     ///
-    /// Variable names are deliberately prefixed with `r` so none of them can collide with a term of
-    /// Spotify's scripting dictionary (`name`, `id`, `artist`, ...) inside the `tell` block.
-    public static let statusScript = """
-        with timeout of 5 seconds
-            if application id "com.spotify.client" is not running then return "NOT_RUNNING"
-            tell application id "com.spotify.client"
-                set sep to (ASCII character 31)
+    /// Robustness rules:
+    ///  * The separator is built OUTSIDE the `tell` block with the built-in `character id` (no scripting
+    ///    addition, no extra Apple Event to Spotify).
+    ///  * Every property is read in its own `try … on error` with a default, so one failing term (ads, local
+    ///    files, a term Spotify stops implementing) never loses the others.
+    ///  * Variable names are prefixed with `r` so none of them can collide with a term of Spotify's scripting
+    ///    dictionary (`name`, `id`, `artist`, ...) inside the `tell` block.
+    ///  * A term that is missing from Spotify's dictionary altogether makes the script fail to COMPILE, which no
+    ///    `try` can catch; the caller then falls back to `coreStatusScript`.
+    public static let statusScript = makeStatusScript(includeOptionalTerms: true)
+
+    /// Fallback that reads only the terms every Spotify version has had (`player state`, `player position` and
+    /// `id`, `name`, `artist`, `album`, `duration` of `current track`). Same output format; shuffle, repeat and
+    /// volume come back as their defaults and the artwork URL is empty (the oEmbed cover fallback takes over).
+    public static let coreStatusScript = makeStatusScript(includeOptionalTerms: false)
+
+    static func makeStatusScript(includeOptionalTerms: Bool) -> String {
+        func read(_ variable: String, _ expression: String) -> String {
+            """
+                    try
+                        set \(variable) to (\(expression)) as text
+                    on error
+                    end try
+
+            """
+        }
+        var reads = read("rState", "player state") + read("rPos", "player position")
+        if includeOptionalTerms {
+            reads += read("rShuf", "shuffling") + read("rRep", "repeating") + read("rVol", "sound volume")
+        }
+        reads += """
+                    set trk to missing value
+                    try
+                        set trk to current track
+                    on error
+                    end try
+                    if trk is not missing value then
+
+            """
+        var trackReads = read("rId", "id of trk") + read("rName", "name of trk") + read("rArtist", "artist of trk")
+            + read("rAlbum", "album of trk") + read("rDur", "duration of trk")
+        if includeOptionalTerms { trackReads += read("rArt", "artwork url of trk") }
+        // Indent the track reads one level deeper (inside the `if`).
+        reads += trackReads.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.isEmpty ? "" : "    " + $0 }.joined(separator: "\n")
+        reads += """
+                    end if
+
+            """
+        return """
+            with timeout of 5 seconds
+                if application id "com.spotify.client" is not running then return "NOT_RUNNING"
+                set sep to character id 31
                 set rState to "stopped"
                 set rPos to "0"
                 set rShuf to "false"
@@ -55,44 +101,12 @@ public enum SpotifyScriptParser {
                 set rAlbum to ""
                 set rDur to "0"
                 set rArt to ""
-                try
-                    set rState to (player state as text)
-                end try
-                try
-                    set rPos to (player position as text)
-                end try
-                try
-                    set rShuf to (shuffling as text)
-                end try
-                try
-                    set rRep to (repeating as text)
-                end try
-                try
-                    set rVol to (sound volume as text)
-                end try
-                try
-                    set trk to current track
-                    set rId to (id of trk) as text
-                    try
-                        set rName to (name of trk) as text
-                    end try
-                    try
-                        set rArtist to (artist of trk) as text
-                    end try
-                    try
-                        set rAlbum to (album of trk) as text
-                    end try
-                    try
-                        set rDur to ((duration of trk) as text)
-                    end try
-                    try
-                        set rArt to ((artwork url of trk) as text)
-                    end try
-                end try
+                tell application id "com.spotify.client"
+            \(reads)    end tell
                 return rState & sep & rPos & sep & rShuf & sep & rRep & sep & rVol & sep & rId & sep & rName & sep & rArtist & sep & rAlbum & sep & rDur & sep & rArt
-            end tell
-        end timeout
-        """
+            end timeout
+            """
+    }
 
     /// Frozen entry point: nil when the output cannot be a status line (including "not running").
     public static func parse(_ output: String, now: Date) -> PlaybackSnapshot? {
