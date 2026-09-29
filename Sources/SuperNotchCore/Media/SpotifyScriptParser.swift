@@ -46,67 +46,149 @@ public enum SpotifyScriptParser {
     ///    dictionary (`name`, `id`, `artist`, ...) inside the `tell` block.
     ///  * A term that is missing from Spotify's dictionary altogether makes the script fail to COMPILE, which no
     ///    `try` can catch; the caller then falls back to `coreStatusScript`.
-    public static let statusScript = makeStatusScript(includeOptionalTerms: true)
-
-    /// Fallback that reads only the terms every Spotify version has had (`player state`, `player position` and
-    /// `id`, `name`, `artist`, `album`, `duration` of `current track`). Same output format; shuffle, repeat and
-    /// volume come back as their defaults and the artwork URL is empty (the oEmbed cover fallback takes over).
-    public static let coreStatusScript = makeStatusScript(includeOptionalTerms: false)
-
-    static func makeStatusScript(includeOptionalTerms: Bool) -> String {
-        func read(_ variable: String, _ expression: String) -> String {
-            """
-                    try
-                        set \(variable) to (\(expression)) as text
-                    on error
-                    end try
-
-            """
-        }
-        var reads = read("rState", "player state") + read("rPos", "player position")
-        if includeOptionalTerms {
-            reads += read("rShuf", "shuffling") + read("rRep", "repeating") + read("rVol", "sound volume")
-        }
-        reads += """
+    public static let statusScript = """
+        with timeout of 5 seconds
+            if application id "com.spotify.client" is not running then return "NOT_RUNNING"
+            set sep to character id 31
+            set rState to "stopped"
+            set rPos to "0"
+            set rShuf to "false"
+            set rRep to "false"
+            set rVol to "100"
+            set rId to ""
+            set rName to ""
+            set rArtist to ""
+            set rAlbum to ""
+            set rDur to "0"
+            set rArt to ""
+            set trk to missing value
+            tell application id "com.spotify.client"
+                try
+                    set rState to (player state as text)
+                on error
+                    set rState to "stopped"
+                end try
+                try
+                    set rPos to (player position as text)
+                on error
+                    set rPos to "0"
+                end try
+                try
+                    set rShuf to (shuffling as text)
+                on error
+                    set rShuf to "false"
+                end try
+                try
+                    set rRep to (repeating as text)
+                on error
+                    set rRep to "false"
+                end try
+                try
+                    set rVol to (sound volume as text)
+                on error
+                    set rVol to "100"
+                end try
+                try
+                    set trk to current track
+                on error
                     set trk to missing value
-                    try
-                        set trk to current track
-                    on error
-                    end try
-                    if trk is not missing value then
+                end try
+                try
+                    set rId to (id of trk as text)
+                on error
+                    set rId to ""
+                end try
+                try
+                    set rName to (name of trk as text)
+                on error
+                    set rName to ""
+                end try
+                try
+                    set rArtist to (artist of trk as text)
+                on error
+                    set rArtist to ""
+                end try
+                try
+                    set rAlbum to (album of trk as text)
+                on error
+                    set rAlbum to ""
+                end try
+                try
+                    set rDur to (duration of trk as text)
+                on error
+                    set rDur to "0"
+                end try
+                try
+                    set rArt to (artwork url of trk as text)
+                on error
+                    set rArt to ""
+                end try
+            end tell
+            return rState & sep & rPos & sep & rShuf & sep & rRep & sep & rVol & sep & rId & sep & rName & sep & rArtist & sep & rAlbum & sep & rDur & sep & rArt
+        end timeout
+        """
 
-            """
-        var trackReads = read("rId", "id of trk") + read("rName", "name of trk") + read("rArtist", "artist of trk")
-            + read("rAlbum", "album of trk") + read("rDur", "duration of trk")
-        if includeOptionalTerms { trackReads += read("rArt", "artwork url of trk") }
-        // Indent the track reads one level deeper (inside the `if`).
-        reads += trackReads.split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.isEmpty ? "" : "    " + $0 }.joined(separator: "\n")
-        reads += """
-                    end if
-
-            """
-        return """
-            with timeout of 5 seconds
-                if application id "com.spotify.client" is not running then return "NOT_RUNNING"
-                set sep to character id 31
-                set rState to "stopped"
-                set rPos to "0"
-                set rShuf to "false"
-                set rRep to "false"
-                set rVol to "100"
-                set rId to ""
-                set rName to ""
-                set rArtist to ""
-                set rAlbum to ""
-                set rDur to "0"
-                set rArt to ""
-                tell application id "com.spotify.client"
-            \(reads)    end tell
-                return rState & sep & rPos & sep & rShuf & sep & rRep & sep & rVol & sep & rId & sep & rName & sep & rArtist & sep & rAlbum & sep & rDur & sep & rArt
-            end timeout
-            """
-    }
+    /// Fallback that reads only the core terms (`player state`, `player position` and `id`, `name`, `artist`,
+    /// `album`, `duration` of `current track`), for a Spotify build whose dictionary lacks an optional term and
+    /// so makes `statusScript` fail to compile. Same output format: shuffle, repeat and volume come back as
+    /// their defaults and the artwork URL is empty (the oEmbed cover fallback takes over).
+    public static let coreStatusScript = """
+        with timeout of 5 seconds
+            if application id "com.spotify.client" is not running then return "NOT_RUNNING"
+            set sep to character id 31
+            set rState to "stopped"
+            set rPos to "0"
+            set rId to ""
+            set rName to ""
+            set rArtist to ""
+            set rAlbum to ""
+            set rDur to "0"
+            set trk to missing value
+            tell application id "com.spotify.client"
+                try
+                    set rState to (player state as text)
+                on error
+                    set rState to "stopped"
+                end try
+                try
+                    set rPos to (player position as text)
+                on error
+                    set rPos to "0"
+                end try
+                try
+                    set trk to current track
+                on error
+                    set trk to missing value
+                end try
+                try
+                    set rId to (id of trk as text)
+                on error
+                    set rId to ""
+                end try
+                try
+                    set rName to (name of trk as text)
+                on error
+                    set rName to ""
+                end try
+                try
+                    set rArtist to (artist of trk as text)
+                on error
+                    set rArtist to ""
+                end try
+                try
+                    set rAlbum to (album of trk as text)
+                on error
+                    set rAlbum to ""
+                end try
+                try
+                    set rDur to (duration of trk as text)
+                on error
+                    set rDur to "0"
+                end try
+            end tell
+            return rState & sep & rPos & sep & "false" & sep & "false" & sep & "100" & sep & rId & sep & rName & sep & rArtist & sep & rAlbum & sep & rDur & sep & ""
+        end timeout
+        """
 
     /// Frozen entry point: nil when the output cannot be a status line (including "not running").
     public static func parse(_ output: String, now: Date) -> PlaybackSnapshot? {
