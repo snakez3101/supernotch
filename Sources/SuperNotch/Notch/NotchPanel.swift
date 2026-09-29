@@ -48,6 +48,11 @@ final class NotchPanel: NSPanel {
         appearance = NSAppearance(named: .darkAqua)
     }
 
+    /// The panel deliberately covers the menu bar next to the notch: never let AppKit push it down.
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
+    }
+
     override var canBecomeKey: Bool { allowsKeyFocus() }
     override var canBecomeMain: Bool { false }
 

@@ -82,20 +82,21 @@ public struct NotchGeometry: Sendable, Hashable {
             height: size.height)
     }
 
-    /// Screen rect of the current shape body (open shapes and the symmetric closed wings are all centred on
-    /// the physical notch; `closedWidthExtra` comes from `NotchMetrics.closedWidthExtra`).
-    public func shapeRectInScreen(for presentation: NotchPresentation, closedWidthExtra: CGFloat) -> CGRect {
-        shapeRectInScreen(for: size(for: presentation, closedWidthExtra: closedWidthExtra))
+    /// Screen rect of the current shape body. Open shapes are centred on the notch; the closed shape follows
+    /// its wings (a lone right wing shifts it right by half its width; the physical notch never moves).
+    public func shapeRectInScreen(for presentation: NotchPresentation, wings: NotchClosedWings) -> CGRect {
+        let rect = shapeRectInScreen(for: size(for: presentation, closedWidthExtra: wings.total))
+        guard presentation.isClosed else { return rect }
+        return rect.offsetBy(dx: wings.centerOffset, dy: 0)
     }
 
     /// Where a dwelling pointer opens the closed notch: the physical notch plus `slack` on each side, widened
-    /// to the visible closed shape when island wings are showing (hovering a visible wing is intentional;
-    /// the bare menu bar beside the notch is not).
-    public func triggerRect(closedWidthExtra: CGFloat, slack: CGFloat = NotchMetrics.hoverSlack) -> CGRect {
-        let wing = max(closedWidthExtra, 0) / 2
-        return CGRect(
-            x: notchRect.minX - wing - slack, y: notchRect.minY, width: notchRect.width + 2 * (wing + slack),
-            height: notchRect.height + 1)
+    /// by the visible closed wings (hovering a visible wing is intentional; the bare menu bar beside the notch
+    /// is not).
+    public func triggerRect(wings: NotchClosedWings, slack: CGFloat = NotchMetrics.hoverSlack) -> CGRect {
+        CGRect(
+            x: notchRect.minX - wings.leading - slack, y: notchRect.minY,
+            width: notchRect.width + wings.total + 2 * slack, height: notchRect.height + 1)
     }
 
     /// The region that counts as hovering the notch (physical notch + horizontal slack, up to the screen top).
@@ -131,6 +132,41 @@ public struct NotchGeometry: Sendable, Hashable {
     public func isOnScreen(frame: CGRect) -> Bool {
         abs(frame.minX - screenFrame.minX) < 1 && abs(frame.minY - screenFrame.minY) < 1
             && abs(frame.width - screenFrame.width) < 1 && abs(frame.height - screenFrame.height) < 1
+    }
+}
+
+// MARK: - Closed wings
+
+/// Extra width left and right of the physical notch while closed (SPEC §A.2). The rule itself lives in
+/// `NotchMetrics.closedWings` (FOUNDATION, single source of truth); this type adds the geometry helpers.
+public struct NotchClosedWings: Sendable, Hashable {
+    public var leading: CGFloat
+    public var trailing: CGFloat
+
+    public init(leading: CGFloat = 0, trailing: CGFloat = 0) {
+        self.leading = max(leading, 0)
+        self.trailing = max(trailing, 0)
+    }
+
+    public init(_ wings: (leading: CGFloat, trailing: CGFloat)) {
+        self.init(leading: wings.leading, trailing: wings.trailing)
+    }
+
+    public static let none = NotchClosedWings()
+
+    /// `closedWidthExtra` for `NotchGeometry.size(for:closedWidthExtra:)`.
+    public var total: CGFloat { leading + trailing }
+    public var isEmpty: Bool { total == 0 }
+    /// Horizontal offset of the closed shape's centre from the notch centre.
+    public var centerOffset: CGFloat { (trailing - leading) / 2 }
+
+    /// Exactly `NotchMetrics.closedWings(mode:hasIslandContent:showsUsageWarning:)`.
+    public static func resolve(mode: ClosedNotchMode, hasIslandContent: Bool, showsUsageWarning: Bool)
+        -> NotchClosedWings
+    {
+        NotchClosedWings(
+            NotchMetrics.closedWings(
+                mode: mode, hasIslandContent: hasIslandContent, showsUsageWarning: showsUsageWarning))
     }
 }
 

@@ -581,12 +581,12 @@ final class ClaudeSessionsModel {
 
     /// Removes our entries from the primary and every extra config folder; restores the user's statusLine.
     func uninstallHooks() {
+        guard !isHookOperationRunning else { return }
+        let installer = self.installer
         let primary = installer.primaryTarget(configDirectory: configDirectory)
         let extras = installedExtraDirectories.map { installer.secondaryTarget(configDirectory: $0) }
-        guard !isHookOperationRunning else { return }
         isHookOperationRunning = true
         hookMessage = nil
-        let installer = installer
         Task { [weak self] in
             let outcome = await Task.detached(priority: .userInitiated) {
                 ClaudeHookOperations.uninstall(installer: installer, primary: primary, extras: extras)
@@ -633,7 +633,7 @@ final class ClaudeSessionsModel {
         guard !isHookOperationRunning else { return }
         isHookOperationRunning = true
         hookMessage = nil
-        let installer = installer
+        let installer = self.installer
         let wrap = settings.settings.wrapStatusLine
         let hint = executableHint
         let home = paths.homeDirectory
@@ -663,7 +663,7 @@ final class ClaudeSessionsModel {
     private func refreshSetup(syncBinary: Bool, allowRepair: Bool) {
         setupGeneration += 1
         let generation = setupGeneration
-        let installer = installer
+        let installer = self.installer
         let primary = installer.primaryTarget(configDirectory: configDirectory)
         let extras = installedExtraDirectories.map { installer.secondaryTarget(configDirectory: $0) }
         let wrap = settings.settings.wrapStatusLine

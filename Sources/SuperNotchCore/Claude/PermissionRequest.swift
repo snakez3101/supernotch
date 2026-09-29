@@ -29,10 +29,15 @@ public struct PermissionRequest: Sendable, Hashable, Identifiable {
     /// Raw `permission_suggestions`; a safe subset of them backs "Always allow".
     public let suggestions: [JSONValue]
     public let receivedAt: Date
+    /// Set when a subagent asked (the card surfaces on the parent session, labelled with `agentType`).
+    public let agentID: String?
+    /// Subagent type, e.g. "Explore" or "general-purpose".
+    public let agentType: String?
 
     public init(
         id: String, sessionID: String, toolName: String, toolInput: JSONValue, summary: String,
-        detail: String?, danger: DangerAssessment, suggestions: [JSONValue], receivedAt: Date
+        detail: String?, danger: DangerAssessment, suggestions: [JSONValue], receivedAt: Date,
+        agentID: String? = nil, agentType: String? = nil
     ) {
         self.id = id
         self.sessionID = sessionID
@@ -43,6 +48,8 @@ public struct PermissionRequest: Sendable, Hashable, Identifiable {
         self.danger = danger
         self.suggestions = suggestions
         self.receivedAt = receivedAt
+        self.agentID = agentID
+        self.agentType = agentType
     }
 
     /// Builds a request from a PermissionRequest envelope (nil if it is not one or lacks a session id).
@@ -61,9 +68,13 @@ public struct PermissionRequest: Sendable, Hashable, Identifiable {
             detail: summary.detail,
             danger: DangerousCommandClassifier.assess(toolName: toolName, input: input),
             suggestions: hook.permissionSuggestions,
-            receivedAt: now
+            receivedAt: now,
+            agentID: hook.agentID,
+            agentType: hook.agentID == nil ? nil : hook.agentType
         )
     }
+
+    public var isFromSubagent: Bool { agentID != nil }
 
     /// "Always allow" is offered only when a safe permission update exists (see `alwaysAllowUpdates`).
     public var canAlwaysAllow: Bool { !alwaysAllowUpdates.isEmpty }
@@ -75,28 +86,31 @@ public struct PermissionRequest: Sendable, Hashable, Identifiable {
         return updates.isEmpty ? .allow : .allowAlways(updatedPermissions: updates)
     }
 
-    /// The `permission_suggestions` we are willing to echo, most specific first:
-    /// 1. `addRules` / `replaceRules` entries with `behavior: "allow"` (e.g. "don't ask again for `npm test`");
-    /// 2. otherwise `setMode` entries to `acceptEdits` (what the native "allow all edits" option does) and
-    ///    `addDirectories` entries.
-    /// Never echoed: deny/ask rules, `removeRules`, and modes that switch permission checks off
-    /// (`bypassPermissions`, `dontAsk`, `auto`).
+    /// The one `permission_suggestions` entry we echo (the native dialog applies one option too):
+    /// 1. the first `addRules` entry with `behavior: "allow"` (e.g. "don't ask again for `npm test`");
+    /// 2. else the first `setMode` to `acceptEdits` (what the native "allow all edits" option does);
+    /// 3. else the first `addDirectories` entry.
+    /// Never echoed: deny/ask rules, `replaceRules`/`removeRules`, and modes that switch permission checks
+    /// off (`bypassPermissions`, `dontAsk`, `auto`).
     public var alwaysAllowUpdates: [JSONValue] {
-        let allowRules = suggestions.filter { entry in
-            let type = entry["type"]?.stringValue
-            return (type == "addRules" || type == "replaceRules") && entry["behavior"]?.stringValue == "allow"
+        func first(_ predicate: (JSONValue) -> Bool) -> [JSONValue]? { suggestions.first(where: predicate).map { [$0] } }
+        return first { entry in
+            entry["type"]?.stringValue == "addRules" && entry["behavior"]?.stringValue == "allow"
                 && !(entry["rules"]?.arrayValue ?? []).isEmpty
         }
-        if !allowRules.isEmpty { return allowRules }
-        return suggestions.filter { entry in
-            switch entry["type"]?.stringValue {
-            case "setMode"?:
-                return entry["mode"]?.stringValue == "acceptEdits"
-            case "addDirectories"?:
-                return !(entry["directories"]?.arrayValue ?? []).isEmpty
-            default:
-                return false
-            }
+            ?? first { $0["type"]?.stringValue == "setMode" && $0["mode"]?.stringValue == "acceptEdits" }
+            ?? first { $0["type"]?.stringValue == "addDirectories" && !($0["directories"]?.arrayValue ?? []).isEmpty }
+            ?? []
+    }
+
+    /// Button title matching what "Always allow" will do.
+    public var alwaysAllowTitle: String {
+        guard let entry = alwaysAllowUpdates.first else { return "Always allow" }
+        let forSession = entry["destination"]?.stringValue == "session"
+        switch entry["type"]?.stringValue {
+        case "setMode"?: return "Allow all edits"
+        case "addDirectories"?: return forSession ? "Allow folder for session" : "Always allow folder"
+        default: return forSession ? "Allow for session" : "Always allow"
         }
     }
 
@@ -108,10 +122,15 @@ public struct PermissionRequest: Sendable, Hashable, Identifiable {
         guard let otherTool, otherTool == toolName else { return false }
         guard let otherInput else { return true }
         if otherInput == toolInput { return true }
+        var sawKey = false
         for key in PermissionSummary.identifyingKeys {
-            if let mine = toolInput[key], let theirs = otherInput[key] { return mine == theirs }
+            let mine = toolInput[key]
+            let theirs = otherInput[key]
+            if let mine, let theirs { return mine == theirs }
+            if mine != nil || theirs != nil { sawKey = true }
         }
-        return false
+        // No identifying field on either side (e.g. an MCP tool with changed defaults): the tool name decides.
+        return !sawKey
     }
 }
 

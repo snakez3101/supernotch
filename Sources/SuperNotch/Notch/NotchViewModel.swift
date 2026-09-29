@@ -48,8 +48,9 @@ final class NotchViewModel {
 
     // MARK: - Additional state (shell views, Settings, other streams may read)
 
-    /// Extra width of the closed wings (`NotchSlots.closedWidthExtra`), reported by `NotchContainerView`.
-    private(set) var closedWidthExtra: CGFloat = 0
+    /// Closed-state wings (`NotchSlots.closedWings`, rule in `NotchMetrics.closedWings`), reported by
+    /// `NotchContainerView`.
+    private(set) var closedWings: NotchClosedWings = .none
     /// A file drag hovers near the notch (mirrors `ShelfModel.isDragActive`), reported by `NotchContainerView`.
     private(set) var isFileDragActive = false
     /// True while the panel should be on screen.
@@ -58,6 +59,8 @@ final class NotchViewModel {
     private(set) var hotkeyConflicts: Set<HotkeyAction> = []
 
     var isOpen: Bool { !presentation.isClosed }
+    /// Total closed wing width (`NotchGeometry.size(for:closedWidthExtra:)`).
+    var closedWidthExtra: CGFloat { closedWings.total }
     /// The popup on screen, if any.
     var currentPopup: PopupRequest? { presentation.peekRequest }
     /// Fullscreen is active and the user wants the notch hidden then (only 🔴 popups show).
@@ -244,10 +247,9 @@ final class NotchViewModel {
 
     // MARK: - Inputs from NotchContainerView
 
-    func updateClosedWidthExtra(_ extra: CGFloat) {
-        let value = max(extra, 0)
-        guard value != closedWidthExtra else { return }
-        closedWidthExtra = value
+    func updateClosedWings(_ wings: NotchClosedWings) {
+        guard wings != closedWings else { return }
+        closedWings = wings
         host?.notchStateDidChange()
         if isPanelVisible { handlePointerMoved(to: NSEvent.mouseLocation) }
     }
@@ -319,7 +321,7 @@ final class NotchViewModel {
     /// Screen rect that accepts clicks: the current shape. nil while hidden.
     var hitRegion: CGRect? {
         guard isPanelVisible, let geometry else { return nil }
-        return geometry.shapeRectInScreen(for: presentation, closedWidthExtra: closedWidthExtra)
+        return geometry.shapeRectInScreen(for: presentation, wings: closedWings)
     }
 
     /// Whether the panel should currently receive mouse events at this screen point (the rest of the panel
@@ -336,9 +338,9 @@ final class NotchViewModel {
             setHovering(false)
             return
         }
-        let shapeRect = geometry.shapeRectInScreen(for: presentation, closedWidthExtra: closedWidthExtra)
+        let shapeRect = geometry.shapeRectInScreen(for: presentation, wings: closedWings)
         let inOpenRegion = !presentation.isClosed && geometry.leaveRect(for: shapeRect).contains(point)
-        let triggerRect = geometry.triggerRect(closedWidthExtra: presentation.isClosed ? closedWidthExtra : 0)
+        let triggerRect = geometry.triggerRect(wings: presentation.isClosed ? closedWings : .none)
         let inTriggerArea = triggerRect.contains(point)
         setHovering(presentation.isClosed ? inTriggerArea : inOpenRegion)
 
@@ -356,7 +358,7 @@ final class NotchViewModel {
     /// Global mouse-down monitor (another app's window) or a click in one of our other windows.
     func handleMouseDownOutsidePanel(at point: CGPoint) {
         guard isOpen, let geometry else { return }
-        let shapeRect = geometry.shapeRectInScreen(for: presentation, closedWidthExtra: closedWidthExtra)
+        let shapeRect = geometry.shapeRectInScreen(for: presentation, wings: closedWings)
         guard !shapeRect.contains(point) else { return }
         guard holds.isEmpty else {
             Log.notch.debug("Click outside ignored: notch is held open")
@@ -425,9 +427,9 @@ final class NotchViewModel {
         guard let geometry else { return false }
         let point = NSEvent.mouseLocation
         if presentation.isClosed {
-            return geometry.triggerRect(closedWidthExtra: closedWidthExtra).contains(point)
+            return geometry.triggerRect(wings: closedWings).contains(point)
         }
-        let rect = geometry.shapeRectInScreen(for: presentation, closedWidthExtra: closedWidthExtra)
+        let rect = geometry.shapeRectInScreen(for: presentation, wings: closedWings)
         return geometry.leaveRect(for: rect).contains(point)
     }
 

@@ -257,6 +257,9 @@ public struct Session: Sendable, Hashable, Identifiable {
     public var updatedAt: Date
     /// Last phase change (used for sorting and popup debouncing).
     public var phaseChangedAt: Date
+    /// The last Stop listed in-flight `background_tasks` (shell, subagent, monitor…): the turn is done but
+    /// background work may wake the session again. Claude-app may skip the 🟢 popup for such turns.
+    public var hasBackgroundWork: Bool
 
     public init(
         id: String,
@@ -278,7 +281,8 @@ public struct Session: Sendable, Hashable, Identifiable {
         isStale: Bool = false,
         startedAt: Date,
         updatedAt: Date? = nil,
-        phaseChangedAt: Date? = nil
+        phaseChangedAt: Date? = nil,
+        hasBackgroundWork: Bool = false
     ) {
         self.id = id
         self.cwd = cwd
@@ -300,6 +304,7 @@ public struct Session: Sendable, Hashable, Identifiable {
         self.startedAt = startedAt
         self.updatedAt = updatedAt ?? startedAt
         self.phaseChangedAt = phaseChangedAt ?? startedAt
+        self.hasBackgroundWork = hasBackgroundWork
     }
 
     public var trafficLight: TrafficLight { phase.trafficLight }

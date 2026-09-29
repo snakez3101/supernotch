@@ -219,7 +219,7 @@ final class ClaudeSessionFocuser {
             let environment = ClaudeCLIEnvironment.shared
             let searchPath = environment.searchPath(homeDirectory: home)
             guard
-                let tmux = searchPath.split(separator: ":").lazy.map({ $0 + "/tmux" }).first(where: {
+                let tmux = searchPath.split(separator: ":").lazy.map({ String($0) + "/tmux" }).first(where: {
                     FileManager.default.isExecutableFile(atPath: $0)
                 })
             else { return }

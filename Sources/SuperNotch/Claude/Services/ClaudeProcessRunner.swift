@@ -361,7 +361,7 @@ nonisolated final class ClaudeCLIEnvironment: @unchecked Sendable {
         let fileManager = FileManager.default
         // 1. Well-known locations and the login shell's PATH.
         for directory in searchPath(homeDirectory: homeDirectory).split(separator: ":") {
-            let candidate = directory + "/claude"
+            let candidate = String(directory) + "/claude"
             if fileManager.isExecutableFile(atPath: candidate) { return candidate }
         }
         // 2. The user's interactive shell (nvm & co. are often set up in .zshrc only).

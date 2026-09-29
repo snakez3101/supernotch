@@ -873,7 +873,7 @@ The logging API lives in `App/Log.swift` (FOUNDATION):
 ```swift
 nonisolated enum Log {
     static let subsystem = "io.github.snakez3101.supernotch"
-    static let app, notch, claude, ipc, media, shelf, clipboard, settings: Logger
+    static let app, notch, claude, ipc, media, shelf, clipboard, settings, system: Logger
 }
 ```
 

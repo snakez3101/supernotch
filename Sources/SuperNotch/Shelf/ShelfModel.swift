@@ -4,13 +4,15 @@
 // Application Support/SuperNotch/Shelf/<uuid>/ (never references), persisted in Shelf/items.json and
 // auto-cleaned per `settings.retention` (pinned items never expire).
 //
-// Drag in:  ShelfDragDetector (global, file drags only) ⇒ `isDragActive` ⇒ notch opens the Shelf tab and shows
-//           `DropZonesView`; the drop itself lands on ShelfDropTargetView (AppKit, handles file promises).
+// Drag in:  ShelfDragDetector (global, file drags only) ⇒ `isDragActive` ⇒ `notch.setFileDragActive(_:)` opens
+//           the Shelf tab and holds it open; `ShelfTabView` shows `DropZonesView`; the drop itself lands on
+//           ShelfDropTargetView (AppKit, handles file promises).
 // Drag out: ShelfTileInteractionView (AppKit NSDraggingSource with the real file URLs, copy semantics).
 // AirDrop:  ShelfSharingCoordinator (NSSharingService, holds the notch open while its UI is up).
 import AppKit
 import Observation
 import SuperNotchCore
+import UniformTypeIdentifiers
 
 @Observable
 final class ShelfModel {
@@ -29,10 +31,16 @@ final class ShelfModel {
     /// Drop zone under a drag over the open Shelf tab (set by the AppKit drop target).
     private(set) var dropTargetZone: ShelfDropZone?
     /// Quick Look: the previewed file and its siblings (`.quickLookPreview` in `ShelfTabView`).
+    /// Settable so the SwiftUI binding can clear it when the preview panel closes.
     var quickLookURL: URL? {
-        didSet { quickLookSelectionChanged() }
+        get { quickLookSelection }
+        set {
+            quickLookSelection = newValue
+            quickLookSelectionChanged()
+        }
     }
     private(set) var quickLookURLs: [URL] = []
+    private var quickLookSelection: URL?
     /// A short user-facing status line ("Copied", "AirDrop can't send this") shown briefly in the tab.
     private(set) var statusMessage: String?
 
@@ -65,9 +73,9 @@ final class ShelfModel {
     @ObservationIgnored private var isStarted = false
     @ObservationIgnored private var hasLoaded = false
     @ObservationIgnored private var settingsToken: SettingsStore.ObserverToken?
-    @ObservationIgnored private var dragHold: NotchHoldToken?
     @ObservationIgnored private var quickLookHold: NotchHoldToken?
     @ObservationIgnored private var dragOutHold: NotchHoldToken?
+    @ObservationIgnored private var chooseFilesHold: NotchHoldToken?
     @ObservationIgnored private var cleanupTimer: Timer?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var statusTask: Task<Void, Never>?
@@ -339,22 +347,23 @@ final class ShelfModel {
 
     // MARK: Additive API: drag out (called by ShelfTileInteractionView)
 
-    /// Pasteboard writers for a drag starting on `id`: real file URLs (no temp copies), link URLs, text.
-    func dragWriters(for ids: [UUID]) -> [(id: UUID, writer: any NSPasteboardWriting)] {
-        ids.compactMap { id in
-            guard let item = item(id: id) else { return nil }
+    /// Pasteboard writers for a drag of `ids`: real file URLs (no temp copies), link URLs, text.
+    func dragPayloads(for ids: [UUID]) -> [ShelfDragPayload] {
+        var payloads: [ShelfDragPayload] = []
+        for id in ids {
+            guard let item = item(id: id) else { continue }
             switch item.kind {
             case .file, .folder, .image:
-                guard let url = fileURL(for: item) else { return nil }
-                return (id, url as NSURL)
+                if let url = fileURL(for: item) { payloads.append(ShelfDragPayload(id: id, writer: url as NSURL)) }
             case .link:
-                guard let string = item.urlString, let url = URL(string: string) else { return nil }
-                return (id, url as NSURL)
+                if let string = item.urlString, let url = URL(string: string) {
+                    payloads.append(ShelfDragPayload(id: id, writer: url as NSURL))
+                }
             case .text:
-                guard let text = item.text else { return nil }
-                return (id, text as NSString)
+                if let text = item.text { payloads.append(ShelfDragPayload(id: id, writer: text as NSString)) }
             }
         }
+        return payloads
     }
 
     /// Image shown under the cursor while dragging an item out.
@@ -404,7 +413,7 @@ final class ShelfModel {
         }
 
         if !fileURLs.isEmpty || !receivers.isEmpty {
-            receivePromises(receivers) { [weak self] promised in
+            receivePromises(receivers) { [weak self] (promised: [URL]) in
                 guard let self else { return }
                 switch targetZone {
                 case .shelf:
@@ -504,11 +513,10 @@ final class ShelfModel {
     private func applyRetention() {
         guard hasLoaded else { return }
         let period = settingsStore.settings.retention
-        let (kept, expired) = RetentionPolicy.partition(items, period: period, now: Date())
+        let expired = RetentionPolicy.partition(items, period: period, now: Date()).expired
         if !expired.isEmpty {
             Log.shelf.info("Auto-cleanup removed \(expired.count, privacy: .public) shelf items")
             remove(ids: expired.map(\.id))
-            _ = kept
         }
         scheduleCleanup()
     }
@@ -543,20 +551,20 @@ final class ShelfModel {
         }
     }
 
+    /// Drop mode on/off. The shell opens the Shelf tab, holds the notch open and keeps the panel hit-testable
+    /// for the drop (`NotchViewModel.setFileDragActive`); calling it here (as well as from the container view)
+    /// is idempotent and also works while the panel is hidden in fullscreen.
     private func setDragActive(_ active: Bool) {
         guard active != isDragActive else { return }
         if active {
-            guard isEnabled else { return }
+            guard isEnabled, notch.geometry != nil else { return }
             isDragActive = true
-            dragHold?.release()
-            dragHold = notch.holdOpen(reason: "shelf.drag")
-            notch.open(tab: .shelf)
+            notch.setFileDragActive(true)
             Log.shelf.debug("Drop mode on")
         } else {
             isDragActive = false
             dropTargetZone = nil
-            dragHold?.release()
-            dragHold = nil
+            notch.setFileDragActive(false)
             Log.shelf.debug("Drop mode off")
         }
     }
@@ -568,8 +576,9 @@ final class ShelfModel {
     }
 
     private func releaseHolds() {
-        dragHold?.release()
-        dragHold = nil
+        if isDragActive { notch.setFileDragActive(false) }
+        chooseFilesHold?.release()
+        chooseFilesHold = nil
         quickLookHold?.release()
         quickLookHold = nil
         dragOutHold?.release()
@@ -623,7 +632,9 @@ final class ShelfModel {
 
     /// Receives file promises (Mail, Photos, Safari…) into a fresh incoming folder, then calls `completion`
     /// on the main actor with every file that arrived (immediately when there are no promises).
-    private func receivePromises(_ receivers: [NSFilePromiseReceiver], completion: @escaping ([URL]) -> Void) {
+    private func receivePromises(
+        _ receivers: [NSFilePromiseReceiver], completion: @escaping @MainActor ([URL]) -> Void
+    ) {
         guard !receivers.isEmpty else {
             completion([])
             return
@@ -633,13 +644,14 @@ final class ShelfModel {
             completion([])
             return
         }
-        pendingImports += receivers.count
+        let receiverCount = receivers.count
+        pendingImports += receiverCount
         let expected = receivers.reduce(0) { $0 + max($1.fileTypes.count, 1) }
         let collector = ShelfPromiseCollector(expected: expected)
         collector.onComplete = { [weak self] urls, failures in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                self.pendingImports = max(self.pendingImports - receivers.count, 0)
+                self.pendingImports = max(self.pendingImports - receiverCount, 0)
                 if failures > 0 { self.showStatus("Some dropped files couldn't be received") }
                 completion(urls)
             }
@@ -685,10 +697,12 @@ final class ShelfModel {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
         panel.level = .modalPanel
-        let hold = notch.holdOpen(reason: "shelf.choose-files")
+        chooseFilesHold?.release()
+        chooseFilesHold = notch.holdOpen(reason: "shelf.choose-files")
         panel.begin { [weak self] response in
             MainActor.assumeIsolated {
-                hold.release()
+                self?.chooseFilesHold?.release()
+                self?.chooseFilesHold = nil
                 guard response == .OK else { return }
                 let urls = panel.urls
                 guard let self, !urls.isEmpty else { return }
@@ -707,6 +721,14 @@ final class ShelfModel {
             self?.statusMessage = nil
         }
     }
+}
+
+// MARK: - Drag payload
+
+/// One dragged shelf item and what goes on the drag pasteboard for it.
+struct ShelfDragPayload {
+    let id: UUID
+    let writer: any NSPasteboardWriting
 }
 
 // MARK: - File promise collector

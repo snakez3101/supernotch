@@ -3,8 +3,14 @@ import Foundation
 // Owner: claude-core. Signatures are contract (SPEC §D.1, §E.4 "Title resolution").
 //
 // Order: custom-title › ai-title › session_title › agents name (unless default "repo-3f") › Haiku-generated ›
-// first prompt (cleaned, truncated) › project name. Native titles longer than `maxWords` are replaced by the
-// generated (compressed) title once one exists; until then they are shown truncated.
+// first prompt (cleaned, truncated) › project name. Native titles longer than `maxWords` are shown shortened
+// ("Fix flaky login test…"), or replaced by a generated title if one exists.
+//
+// Generation policy (REQUIREMENTS "only if none exists"): a Haiku title is generated only when Claude Code has
+// produced no title of its own. Claude Code writes its `ai-title` in the background shortly after the first
+// prompt, so the store asks only after the first turn completed (or `generationGraceSeconds` passed) AND the
+// transcript was re-read since (`shouldRequestGeneration`). Compressing long native titles is opt-in
+// (`needsCompression`, `SessionStoreConfiguration.compressLongNativeTitles`).
 
 public enum TitleResolver {
     public static let maxWords = 4
@@ -41,13 +47,37 @@ public enum TitleResolver {
         return SessionTitle(text: projectName, source: .fallback)
     }
 
-    /// Whether a Haiku title should be generated (at most once per session; the store and the generator cache).
-    /// True when there is no generated title yet and either the best native title is longer than `maxWords`
-    /// or there is no native title but a usable first prompt.
+    /// Seconds after the first prompt before a missing native title counts as "none exists".
+    public static let generationGraceSeconds: TimeInterval = 30
+
+    /// Whether a Haiku title is wanted at all: no generated title yet, no native title, a usable first prompt.
+    /// The generator should re-check this right before spawning `claude -p` (a native title may have arrived).
     public static func needsGeneration(_ candidates: TitleCandidates, firstPrompt: String?) -> Bool {
-        guard usableGenerated(candidates) == nil else { return false }
-        if let native = nativeTitle(candidates, projectName: nil) { return wordCount(native.text) > maxWords }
+        guard usableGenerated(candidates) == nil, nativeTitle(candidates, projectName: nil) == nil else {
+            return false
+        }
         return promptTitleText(firstPrompt) != nil
+    }
+
+    /// Opt-in: the best native title is longer than `maxWords` and no generated title exists yet.
+    public static func needsCompression(_ candidates: TitleCandidates) -> Bool {
+        guard usableGenerated(candidates) == nil, let native = nativeTitle(candidates, projectName: nil) else {
+            return false
+        }
+        return wordCount(native.text) > maxWords
+    }
+
+    /// The "has Claude Code had its chance?" rule: generation is requested only after at least one completed
+    /// turn or `graceSeconds` since the first prompt, and only when the transcript was read after that point
+    /// (so an `ai-title` written meanwhile is known). `transcriptUnavailable` skips the last condition.
+    public static func shouldRequestGeneration(
+        _ candidates: TitleCandidates, firstPrompt: String?, completedTurns: Int, secondsSinceFirstPrompt: TimeInterval,
+        transcriptReadSinceCheckpoint: Bool, transcriptUnavailable: Bool = false,
+        graceSeconds: TimeInterval = generationGraceSeconds
+    ) -> Bool {
+        guard needsGeneration(candidates, firstPrompt: firstPrompt) else { return false }
+        guard completedTurns > 0 || secondsSinceFirstPrompt >= graceSeconds else { return false }
+        return transcriptReadSinceCheckpoint || transcriptUnavailable
     }
 
     /// The text to feed the Haiku prompt: the long native title if any, else the cleaned first prompt.

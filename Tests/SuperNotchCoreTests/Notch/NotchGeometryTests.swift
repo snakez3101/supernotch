@@ -104,30 +104,33 @@ struct NotchGeometryTests {
         #expect(geometry.rectInPanel(rect) == CGRect(x: 20, y: 0, width: 540, height: 188))
     }
 
-    @Test func closedShapeIsCentredOnTheNotch() throws {
+    @Test func closedShapeFollowsItsWings() throws {
         let geometry = try #require(mbp14)
-        let warning = geometry.shapeRectInScreen(for: .closed, closedWidthExtra: 2 * NotchMetrics.warningWingWidth)
-        #expect(warning.minX == geometry.notchRect.minX - 14)
+        // Usage warning only: a lone 14 pt right wing; the left edge stays on the physical notch.
+        let warning = geometry.shapeRectInScreen(for: .closed, wings: NotchClosedWings(trailing: 14))
+        #expect(warning.minX == geometry.notchRect.minX)
         #expect(warning.maxX == geometry.notchRect.maxX + 14)
-        let island = geometry.shapeRectInScreen(for: .closed, closedWidthExtra: 72)
+        #expect(warning.maxY == 982)
+        let island = geometry.shapeRectInScreen(for: .closed, wings: NotchClosedWings(leading: 36, trailing: 36))
         #expect(island.minX == geometry.notchRect.minX - 36)
         #expect(island.maxX == geometry.notchRect.maxX + 36)
-        #expect(island.maxY == 982)
-        // Open shapes ignore the wings.
-        let expanded = geometry.shapeRectInScreen(for: .expanded(.home), closedWidthExtra: 72)
+        // Open shapes ignore the wings and stay centred.
+        let expanded = geometry.shapeRectInScreen(for: .expanded(.home), wings: NotchClosedWings(trailing: 14))
         #expect(expanded.width == 540)
         #expect(expanded.midX == geometry.notchRect.midX)
     }
 
     @Test func triggerCoversVisibleWingsOnly() throws {
         let geometry = try #require(mbp14)
-        let bare = geometry.triggerRect(closedWidthExtra: 0, slack: 6)
-        #expect(bare == geometry.hoverRect(slack: 6))
-        let island = geometry.triggerRect(closedWidthExtra: 72, slack: 6)
+        #expect(geometry.triggerRect(wings: .none, slack: 6) == geometry.hoverRect(slack: 6))
+        let island = geometry.triggerRect(wings: NotchClosedWings(leading: 36, trailing: 36), slack: 6)
         #expect(island.minX == geometry.notchRect.minX - 42)
         #expect(island.maxX == geometry.notchRect.maxX + 42)
         #expect(island.minY == geometry.notchRect.minY)
         #expect(!island.contains(CGPoint(x: geometry.notchRect.minX - 50, y: 970)))
+        let warning = geometry.triggerRect(wings: NotchClosedWings(trailing: 14), slack: 6)
+        #expect(warning.minX == geometry.notchRect.minX - 6)
+        #expect(warning.maxX == geometry.notchRect.maxX + 20)
     }
 
     @Test func hoverRectOnlyCoversThePhysicalNotchPlusSlack() throws {
@@ -155,6 +158,42 @@ struct NotchGeometryTests {
         let geometry = try #require(mbp14)
         let point = geometry.pointInPanel(CGPoint(x: 756, y: 982))
         #expect(point == CGPoint(x: 290, y: 0))
+    }
+}
+
+@Suite("NotchClosedWings")
+struct NotchClosedWingsTests {
+    @Test func resolveMatchesTheFoundationRule() {
+        for mode in ClosedNotchMode.allCases {
+            for content in [false, true] {
+                for warning in [false, true] {
+                    let rule = NotchMetrics.closedWings(mode: mode, hasIslandContent: content, showsUsageWarning: warning)
+                    let wings = NotchClosedWings.resolve(mode: mode, hasIslandContent: content, showsUsageWarning: warning)
+                    #expect(wings.leading == rule.leading)
+                    #expect(wings.trailing == rule.trailing)
+                    #expect(
+                        wings.total
+                            == NotchMetrics.closedWidthExtra(
+                                mode: mode, hasIslandContent: content, showsUsageWarning: warning))
+                }
+            }
+        }
+    }
+
+    @Test func warningWingShiftsTheShapeRight() {
+        let wings = NotchClosedWings.resolve(mode: .invisible, hasIslandContent: false, showsUsageWarning: true)
+        #expect(wings == NotchClosedWings(trailing: NotchMetrics.warningWingWidth))
+        #expect(wings.centerOffset == 7)
+    }
+
+    @Test func islandIsSymmetric() {
+        let wings = NotchClosedWings.resolve(mode: .island, hasIslandContent: true, showsUsageWarning: true)
+        #expect(wings.centerOffset == 0)
+        #expect(wings.total == 2 * NotchMetrics.islandWingWidth)
+    }
+
+    @Test func negativeWidthsClamp() {
+        #expect(NotchClosedWings(leading: -3, trailing: -1).isEmpty)
     }
 }
 

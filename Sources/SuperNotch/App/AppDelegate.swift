@@ -166,6 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
         let openNotch = NSMenuItem(title: "Open Notch", action: #selector(openNotchFromMenu(_:)), keyEquivalent: "")
         openNotch.target = self
+        openNotch.isEnabled = appModel?.notch.geometry != nil  // no built-in notch display (clamshell, external)
         Self.applyKeyEquivalent(settings.toggleNotchHotkey, to: openNotch)
         menu.addItem(openNotch)
 
