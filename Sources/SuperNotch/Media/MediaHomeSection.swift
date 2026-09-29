@@ -6,7 +6,8 @@
 //        ⏮    ⏯    ⏭
 //
 // Empty states keep the same footprint (the layout never changes size): Spotify off, not running ("Open
-// Spotify"), Automation not allowed yet / denied, nothing playing.
+// Spotify"), Automation not allowed yet / waiting / no answer / denied (see `MediaPermissionPresentation`),
+// nothing playing.
 import SuperNotchCore
 import SwiftUI
 
@@ -36,25 +37,45 @@ struct MediaHomeSection: View {
         }
     }
 
-    /// Spotify runs but there is nothing to show: either nothing plays or we are not allowed to ask.
+    /// Spotify runs but there is nothing to show: either nothing plays, or Automation is not (yet) allowed. The
+    /// permission states come from `MediaPermissionPresentation` (same logic as onboarding and Settings).
     @ViewBuilder
     private var noTrackState: some View {
-        switch media.automationPermission {
-        case .denied:
-            MediaEmptyStateView(
-                symbol: "lock.fill", title: "Spotify access is off",
-                detail: "Allow SuperNotch under Privacy > Automation.", buttonTitle: "Open System Settings",
-                action: { media.openAutomationSettings() })
-        case .unknown, .notRunning:
-            MediaEmptyStateView(
-                symbol: "music.note", title: "Allow Spotify control",
-                detail: "macOS asks once. No Spotify login needed.", buttonTitle: "Allow Access",
-                action: { media.requestAutomationPermission() })
-        case .granted:
+        let presentation = media.permissionPresentation
+        if presentation.tone == .allowed {
             MediaEmptyStateView(
                 symbol: "music.note", title: "Nothing playing", buttonTitle: "Open Spotify",
                 action: { media.openSpotify() })
+        } else {
+            MediaPermissionEmptyState(presentation: presentation)
         }
+    }
+}
+
+/// Permission state in the 200 pt column: headline, a short sentence, the first two actions.
+private struct MediaPermissionEmptyState: View {
+    @Environment(MediaModel.self) private var media
+
+    let presentation: MediaPermissionPresentation
+
+    init(presentation: MediaPermissionPresentation) {
+        self.presentation = presentation
+    }
+
+    var body: some View {
+        let primary = presentation.actions.first
+        let secondary = presentation.actions.dropFirst().first
+        MediaEmptyStateView(
+            symbol: presentation.symbol, title: presentation.title, detail: presentation.compactDetail,
+            buttonTitle: primary?.shortTitle, action: handler(for: primary),
+            secondaryButtonTitle: secondary?.shortTitle, secondaryAction: handler(for: secondary),
+            isBusy: presentation.isBusy)
+    }
+
+    private func handler(for action: MediaPermissionAction?) -> (() -> Void)? {
+        guard let action else { return nil }
+        let model = media
+        return { model.perform(action) }
     }
 }
 
@@ -120,19 +141,27 @@ private struct MediaNowPlayingView: View {
     }
 
     /// Track info still arrives through Spotify's notification, but commands need Automation.
+    @ViewBuilder
     private var permissionPrompt: some View {
+        let presentation = media.permissionPresentation
         VStack(spacing: DesignTokens.Spacing.s) {
-            Text(media.automationPermission == .denied ? "Spotify control is off" : "Allow Spotify control")
-                .font(DesignTokens.Fonts.caption)
-                .foregroundStyle(DesignTokens.Colors.secondaryText)
-            if media.automationPermission == .denied {
-                Button("Open System Settings") { media.openAutomationSettings() }
-                    .buttonStyle(.glass)
-                    .controlSize(.small)
-            } else {
-                Button("Allow Access") { media.requestAutomationPermission() }
-                    .buttonStyle(.glass)
-                    .controlSize(.small)
+            HStack(spacing: DesignTokens.Spacing.xs) {
+                if presentation.isBusy {
+                    ProgressView()
+                        .controlSize(.mini)
+                }
+                Text(presentation.title)
+                    .font(DesignTokens.Fonts.caption)
+                    .foregroundStyle(DesignTokens.Colors.secondaryText)
+                    .lineLimit(1)
+            }
+            HStack(spacing: DesignTokens.Spacing.s) {
+                ForEach(Array(presentation.actions.prefix(2)), id: \.self) { action in
+                    Button(action.shortTitle) { media.perform(action) }
+                        .buttonStyle(.glass)
+                        .controlSize(.small)
+                        .lineLimit(1)
+                }
             }
         }
         .frame(maxWidth: .infinity)

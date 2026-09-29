@@ -10,6 +10,12 @@
 // playing, at most twice per track, normally cancelled by the track-change notification). Nothing polls while
 // paused, while the notch is closed, or while Spotify is not running; the island only needs the cover and the
 // playing flag, which the notifications deliver.
+//
+// Automation permission (SPEC §A.5, §A.11) is a small state machine in Core (`MediaPermissionFlow`):
+//   "Allow Access" ──► wait for Spotify (launch it if needed; ready = first notification or 4 s after launch)
+//                  ──► ONE real Apple Event on the permission queue (the macOS dialog) ── 45 s timeout
+//                  ──► granted / denied / "macOS didn't answer" (Try Again, Reset & Ask Again, System Settings)
+// Silent checks never prompt, time out after 3 s, and never turn an observed denial back into "not asked".
 import AppKit
 import Foundation
 import Observation
@@ -24,7 +30,8 @@ final class MediaModel {
     /// True only while the feature is enabled AND the Spotify desktop app is running.
     private(set) var isSpotifyRunning = false
     private(set) var artwork: NSImage?
-    private(set) var automationPermission: MediaAutomationPermission = .unknown
+    /// Automation (TCC) permission plus the request in progress. Mutated only via `updatePermission`.
+    private(set) var permissionFlow = MediaPermissionFlow()
     /// Dominant saturated colour of the current cover, for subtle tints. nil for greyscale / missing covers.
     private(set) var accent: MediaAccentColor?
 
@@ -34,6 +41,18 @@ final class MediaModel {
     var isPlaying: Bool { isSpotifyRunning && (snapshot?.isPlaying ?? false) }
     /// Spotify is running and macOS lets us send it commands.
     var canControl: Bool { isSpotifyRunning && automationPermission == .granted }
+    /// Frozen API (SPEC §D.4).
+    var automationPermission: MediaAutomationPermission { permissionFlow.permission }
+    /// Waiting for Spotify, asking, resetting, or why the last request failed.
+    var permissionRequest: MediaPermissionRequestState { permissionFlow.request }
+    /// Status, sentences and buttons for the permission UI (onboarding, Settings, Home).
+    var permissionPresentation: MediaPermissionPresentation {
+        MediaPermissionPresentation(
+            permission: permissionFlow.permission, request: permissionFlow.request,
+            resetCommand: automationResetCommand)
+    }
+    /// The Terminal fallback of "Reset & Ask Again".
+    var automationResetCommand: String { MediaPermissionReset.terminalCommand(bundleID: Self.ownBundleID) }
 
     // MARK: Dependencies
 
@@ -52,9 +71,10 @@ final class MediaModel {
     @ObservationIgnored private var retryCount = 0
     /// Set when the user issued a command; status reads that started before it are stale.
     @ObservationIgnored private var lastCommandAt = Date.distantPast
-    @ObservationIgnored private var isRequestingPermission = false
-    /// "Allow access" was clicked while Spotify was not running: ask as soon as it has launched (within a minute).
-    @ObservationIgnored private var pendingPermissionRequestAt: Date?
+    /// When we saw Spotify launch (nil when it quit or launched before we started) and whether it has posted a
+    /// playback notification since: together they say whether its Apple Event interface is ready.
+    @ObservationIgnored private var spotifyLaunchedAt: Date?
+    @ObservationIgnored private var sawPlaybackSinceLaunch = false
     /// Track id of the last AppleScript-confirmed snapshot (gates the oEmbed cover fallback).
     @ObservationIgnored private var authoritativeTrackID: String?
     @ObservationIgnored private var currentArtworkKey: String?
@@ -68,6 +88,15 @@ final class MediaModel {
     @ObservationIgnored private var launchTask: Task<Void, Never>?
     @ObservationIgnored private var retryTask: Task<Void, Never>?
     @ObservationIgnored private var artworkTask: Task<Void, Never>?
+    /// Sends the request once Spotify is ready.
+    @ObservationIgnored private var askTask: Task<Void, Never>?
+    /// Ends "Waiting for Spotify…" if Spotify never comes up.
+    @ObservationIgnored private var launchWatchdogTask: Task<Void, Never>?
+    /// A few silent checks after a request without an answer (the dialog may still be open).
+    @ObservationIgnored private var followUpTask: Task<Void, Never>?
+
+    /// Our own bundle id for `tccutil` (sanitised; falls back to the release id when unbundled).
+    private static let ownBundleID = MediaPermissionReset.sanitizedBundleID(Bundle.main.bundleIdentifier)
 
     // MARK: Init / lifecycle
 
@@ -98,6 +127,7 @@ final class MediaModel {
         retryTask = nil
         artworkTask?.cancel()
         artworkTask = nil
+        cancelPermissionTasks()
     }
 
     // MARK: Commands (frozen API)
@@ -139,25 +169,31 @@ final class MediaModel {
         dispatch(.seek(seconds: target), refreshAfter: 0.2)
     }
 
-    /// Asks macOS for permission to control Spotify. Spotify must be running for the system prompt to appear,
-    /// so when it is not, this launches Spotify and asks as soon as it is up.
+    /// Asks macOS for permission to control Spotify ("Allow Access", "Try Again"). The dialog only appears while
+    /// Spotify runs, so this launches Spotify first when needed and asks once it is ready. Every step ends by
+    /// itself (launch watchdog, request timeout), so the button can never stay dead.
     func requestAutomationPermission() {
         guard isEnabled else { return }
         syncRunningState()
-        guard isSpotifyRunning else {
-            pendingPermissionRequestAt = Date()
-            controller.openSpotify()
+        var began = false
+        updatePermission { began = $0.beginWaitingForSpotify() }
+        guard began else {
+            Log.media.info(
+                "Automation request ignored: \(String(describing: self.permissionRequest), privacy: .public)")
             return
         }
-        guard !isRequestingPermission else { return }
-        isRequestingPermission = true
-        Task { [weak self] in
-            guard let self else { return }
-            let permission = await self.controller.determinePermission(askUser: true)
-            self.isRequestingPermission = false
-            self.applyPermission(permission)
-            if permission == .granted { self.requestRefresh() }
+        followUpTask?.cancel()
+        followUpTask = nil
+        if isSpotifyRunning {
+            askWhenSpotifyIsReady()
+            return
         }
+        Log.media.info("Automation request: launching Spotify first")
+        guard controller.openSpotify() else {
+            updatePermission { $0.cancelWaiting() }
+            return
+        }
+        startLaunchWatchdog()
     }
 
     /// Silent re-check (no prompt), e.g. after the user came back from System Settings.
@@ -167,9 +203,45 @@ final class MediaModel {
         guard isSpotifyRunning else { return }
         Task { [weak self] in
             guard let self else { return }
-            let permission = await self.controller.determinePermission(askUser: false)
-            self.applyPermission(permission)
+            let permission = await self.runSilentCheck(reason: "recheck")
             if permission == .granted { self.requestRefresh() }
+        }
+    }
+
+    /// "Reset & Ask Again": `tccutil reset AppleEvents <our bundle id>` (no admin rights needed), then a fresh
+    /// request. If tccutil fails, the UI shows the command for Terminal.
+    func resetAutomationPermissionAndAsk() {
+        guard isEnabled else { return }
+        var began = false
+        updatePermission { began = $0.beginResetting() }
+        guard began else { return }
+        followUpTask?.cancel()
+        followUpTask = nil
+        let bundleID = Self.ownBundleID
+        Task { [weak self] in
+            guard let self else { return }
+            let succeeded = await self.controller.resetPermission(bundleID: bundleID)
+            self.updatePermission { $0.finishResetting(succeeded: succeeded) }
+            if succeeded, self.isEnabled { self.requestAutomationPermission() }
+        }
+    }
+
+    /// Puts `automationResetCommand` on the clipboard.
+    func copyAutomationResetCommand() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(automationResetCommand, forType: .string)
+    }
+
+    /// Runs a button of `permissionPresentation`.
+    func perform(_ action: MediaPermissionAction) {
+        Log.media.info("Automation action: \(action.rawValue, privacy: .public)")
+        switch action {
+        case .allow, .openSpotifyAndAllow, .tryAgain: requestAutomationPermission()
+        case .openSystemSettings: openAutomationSettings()
+        case .resetAndAskAgain: resetAutomationPermissionAndAsk()
+        case .copyResetCommand: copyAutomationResetCommand()
+        case .checkAgain: recheckAutomationPermission()
         }
     }
 
@@ -241,6 +313,13 @@ final class MediaModel {
         case .playbackChanged(let info):
             syncRunningState()
             guard isSpotifyRunning else { return }
+            sawPlaybackSinceLaunch = true
+            if permissionFlow.request == .waitingForSpotify {
+                // Spotify talks: its Apple Event interface is up. Ask now instead of waiting out the settle delay.
+                askTask?.cancel()
+                askTask = nil
+                askNow()
+            }
             if let info, let merged = SpotifySnapshotMerger.merge(previous: snapshot, info: info, now: Date()) {
                 if merged != snapshot { snapshot = merged }
                 updateArtwork()
@@ -248,9 +327,14 @@ final class MediaModel {
             }
             requestRefresh()  // the script is the source of truth (cover URL, exact position, flags)
         case .launched:
+            spotifyLaunchedAt = Date()
+            sawPlaybackSinceLaunch = false
             syncRunningState()
+            if permissionFlow.request == .waitingForSpotify, isSpotifyRunning { askWhenSpotifyIsReady() }
             scheduleLaunchRefresh()
         case .terminated:
+            spotifyLaunchedAt = nil
+            sawPlaybackSinceLaunch = false
             syncRunningState()
         case .didWake:
             syncRunningState()
@@ -266,14 +350,152 @@ final class MediaModel {
             guard let self, !Task.isCancelled, self.isStarted else { return }
             self.syncRunningState()
             guard self.isSpotifyRunning else { return }
-            if let requestedAt = self.pendingPermissionRequestAt {
-                self.pendingPermissionRequestAt = nil
-                if Date().timeIntervalSince(requestedAt) < 60 { self.requestAutomationPermission() }
-                else { self.requestRefresh() }
-            } else {
-                self.requestRefresh()
+            self.requestRefresh()
+        }
+    }
+
+    // MARK: Automation permission flow
+
+    /// Sends the request now, or once Spotify has settled after a launch.
+    private func askWhenSpotifyIsReady() {
+        launchWatchdogTask?.cancel()
+        launchWatchdogTask = nil
+        askTask?.cancel()
+        askTask = nil
+        let launchedAt = spotifyLaunchedAt ?? SpotifyApp.runningApplication?.launchDate
+        let delay = SpotifyLaunchReadiness.delayBeforeAsking(
+            launchedAt: launchedAt, sawPlaybackNotification: sawPlaybackSinceLaunch, now: Date())
+        guard delay > 0 else {
+            askNow()
+            return
+        }
+        Log.media.info("Automation request: Spotify just launched, asking in \(delay, privacy: .public) s")
+        askTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            self.askTask = nil
+            self.askNow()
+        }
+    }
+
+    private func askNow() {
+        guard isEnabled, permissionFlow.request == .waitingForSpotify else { return }
+        syncRunningState()
+        guard isSpotifyRunning else {
+            // Quit while we waited: keep waiting for the next launch, bounded by the watchdog.
+            startLaunchWatchdog()
+            return
+        }
+        var began = false
+        updatePermission { began = $0.beginAsking() }
+        guard began else { return }
+        launchWatchdogTask?.cancel()
+        launchWatchdogTask = nil
+        Log.media.info("Automation request: sending the probe Apple Event to Spotify")
+        let startedAt = Date()
+        Task { [weak self] in
+            guard let self else { return }
+            let result = await self.controller.askPermission(late: { status in
+                Task { @MainActor [weak self] in self?.applyLateAnswer(status) }
+            })
+            self.finishAsking(result, startedAt: startedAt)
+        }
+    }
+
+    private func finishAsking(_ result: MediaPermissionCallResult, startedAt: Date) {
+        let seconds = Date().timeIntervalSince(startedAt)
+        switch result {
+        case .status(let status):
+            Log.media.info(
+                "Automation request answered: OSStatus \(status, privacy: .public) after \(seconds, privacy: .public) s"
+            )
+        case .timedOut:
+            Log.media.error("Automation request: macOS did not answer within \(seconds, privacy: .public) s")
+        }
+        var outcome = MediaPermissionAskOutcome.granted
+        updatePermission { outcome = $0.finishAsking(result) }
+        switch outcome {
+        case .granted:
+            requestRefresh()
+        case .denied:
+            break
+        case .notRunning:
+            syncRunningState()
+        case .problem:
+            // The dialog may still be open, or the event reached Spotify but failed there: confirm silently.
+            startFollowUpChecks()
+        }
+    }
+
+    /// The user answered the dialog after we stopped waiting.
+    private func applyLateAnswer(_ status: Int32) {
+        Log.media.info("Automation request: late answer OSStatus \(status, privacy: .public)")
+        guard isEnabled else { return }
+        updatePermission { $0.applyLateAnswer(status) }
+        if automationPermission == .granted { requestRefresh() }
+    }
+
+    /// A few silent checks while a failed request is shown, so a late "OK" shows up without another click.
+    private func startFollowUpChecks() {
+        followUpTask?.cancel()
+        followUpTask = Task { [weak self] in
+            for attempt in 0..<MediaPermissionTimeouts.followUpChecks {
+                if attempt > 0 {
+                    try? await Task.sleep(for: .seconds(MediaPermissionTimeouts.followUpInterval))
+                }
+                guard let self, !Task.isCancelled else { return }
+                guard case .failed = self.permissionRequest, self.isEnabled, self.isSpotifyRunning else { return }
+                let permission = await self.runSilentCheck(reason: "follow-up \(attempt + 1)")
+                if permission == .granted {
+                    self.requestRefresh()
+                    return
+                }
             }
         }
+    }
+
+    /// Ends "Waiting for Spotify…" when Spotify does not come up within a minute.
+    private func startLaunchWatchdog() {
+        launchWatchdogTask?.cancel()
+        launchWatchdogTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(MediaPermissionTimeouts.spotifyLaunch))
+            guard let self, !Task.isCancelled else { return }
+            self.launchWatchdogTask = nil
+            guard self.permissionFlow.request == .waitingForSpotify else { return }
+            self.syncRunningState()
+            if self.isSpotifyRunning {
+                self.askWhenSpotifyIsReady()  // the launch notification got lost
+            } else {
+                Log.media.error("Automation request: Spotify did not launch; giving up")
+                self.updatePermission { $0.cancelWaiting() }
+            }
+        }
+    }
+
+    /// Silent check (never prompts, 3 s timeout) merged into the flow. Returns the permission afterwards.
+    @discardableResult
+    private func runSilentCheck(reason: String) async -> MediaAutomationPermission {
+        let result = await controller.checkPermission()
+        switch result {
+        case .status(let status):
+            Log.media.debug(
+                "Automation silent check (\(reason, privacy: .public)): OSStatus \(status, privacy: .public)")
+        case .timedOut:
+            Log.media.error("Automation silent check (\(reason, privacy: .public)) timed out")
+        }
+        guard isEnabled else { return automationPermission }
+        updatePermission { $0.applyObserved(result) }
+        if automationPermission == .notRunning { syncRunningState() }
+        return automationPermission
+    }
+
+    private func cancelPermissionTasks() {
+        askTask?.cancel()
+        askTask = nil
+        launchWatchdogTask?.cancel()
+        launchWatchdogTask = nil
+        followUpTask?.cancel()
+        followUpTask = nil
     }
 
     // MARK: Refresh
@@ -300,9 +522,8 @@ final class MediaModel {
         // Never send an Apple Event before we know it is allowed: the first one would raise the system prompt
         // at a random moment. The silent check does not prompt.
         if automationPermission != .granted {
-            let permission = await controller.determinePermission(askUser: false)
-            applyPermission(permission)
-            guard automationPermission == .granted else { return }
+            let permission = await runSilentCheck(reason: "refresh")
+            guard permission == .granted else { return }
         }
 
         let requestedAt = Date()
@@ -317,7 +538,7 @@ final class MediaModel {
         switch result {
         case .snapshot(let incoming):
             retryCount = 0
-            applyPermission(.granted)
+            updatePermission { $0.applyObserved(.status(MediaAppleEventStatus.noErr)) }
             if !isSpotifyRunning { syncRunningState() }
             let reconciled = PlaybackReconciler.reconcile(previous: snapshot, incoming: incoming)
             if reconciled != snapshot { snapshot = reconciled }
@@ -333,8 +554,11 @@ final class MediaModel {
 
     private func handleFailure(_ failure: SpotifyScriptFailure) {
         switch failure {
-        case .permissionDenied, .consentRequired:
-            if let implied = failure.impliedPermission { applyPermission(implied) }
+        case .permissionDenied:
+            updatePermission { $0.applyObserved(.status(MediaAppleEventStatus.notPermitted)) }
+        case .consentRequired:
+            // Never downgrades an observed denial (see `MediaAutomationPermission.merging(silent:into:)`).
+            updatePermission { $0.applyObserved(.status(MediaAppleEventStatus.wouldRequireConsent)) }
         case .notRunning:
             syncRunningState()
         case .timedOut, .other:
@@ -388,12 +612,22 @@ final class MediaModel {
 
     // MARK: State helpers
 
-    private func applyPermission(_ permission: MediaAutomationPermission) {
-        if permission != automationPermission {
-            automationPermission = permission
-            Log.media.info("Spotify Automation permission: \(permission.rawValue, privacy: .public)")
+    /// The only way `permissionFlow` changes: assigns (and logs) only real changes, so views are not invalidated
+    /// by no-op transitions.
+    private func updatePermission(_ change: (inout MediaPermissionFlow) -> Void) {
+        var flow = permissionFlow
+        change(&flow)
+        guard flow != permissionFlow else { return }
+        let old = permissionFlow
+        permissionFlow = flow
+        if old.permission != flow.permission {
+            let from = old.permission.rawValue
+            let to = flow.permission.rawValue
+            Log.media.info("Spotify Automation permission: \(from, privacy: .public) -> \(to, privacy: .public)")
         }
-        if permission == .notRunning { syncRunningState() }
+        if old.request != flow.request {
+            Log.media.info("Spotify Automation request: \(String(describing: flow.request), privacy: .public)")
+        }
     }
 
     /// Reconciles `isSpotifyRunning` with the system and drops playback state when Spotify is gone.
@@ -401,9 +635,9 @@ final class MediaModel {
         let running = isEnabled && SpotifyApp.isRunning
         if running != isSpotifyRunning { isSpotifyRunning = running }
         if running {
-            if automationPermission == .notRunning { automationPermission = .unknown }
+            updatePermission { $0.spotifyDidStart() }
         } else {
-            if isEnabled, automationPermission != .notRunning { automationPermission = .notRunning }
+            if isEnabled { updatePermission { $0.spotifyDidStop() } }
             clearPlayback()
         }
     }
@@ -413,7 +647,8 @@ final class MediaModel {
         cancelTimers()
         retryTask?.cancel()
         launchTask?.cancel()
-        pendingPermissionRequestAt = nil
+        cancelPermissionTasks()
+        updatePermission { $0.cancelRequest() }
         isRefreshing = false
         refreshQueued = false
         retryCount = 0

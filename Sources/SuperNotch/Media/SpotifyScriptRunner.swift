@@ -1,9 +1,10 @@
 // Owner: media stream. Runs AppleScript for Spotify on ONE dedicated serial background queue (SPEC §F.1).
+// Automation permission calls live in `SpotifyPermissionBroker`, on queues of their own: a hung TCC call must
+// never block the status scripts and commands.
 import AppKit
-import ApplicationServices
-import CoreServices
 import Foundation
 import SuperNotchCore
+import os
 
 /// Result of one AppleScript run.
 nonisolated enum SpotifyScriptOutcome: Sendable {
@@ -26,17 +27,6 @@ nonisolated final class SpotifyScriptRunner: @unchecked Sendable {
         await withCheckedContinuation { (continuation: CheckedContinuation<SpotifyScriptOutcome, Never>) in
             queue.async {
                 continuation.resume(returning: self.runSynchronously(source))
-            }
-        }
-    }
-
-    /// `AEDeterminePermissionToAutomateTarget` for Spotify. With `askUser` the system prompt may appear and the
-    /// call blocks until the user answers, which is why it also lives on the background queue.
-    /// Returns the raw `OSStatus`: 0 granted, -1743 denied, -1744 consent needed, -600 not running.
-    func determinePermission(askUser: Bool) async -> Int32 {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Int32, Never>) in
-            queue.async {
-                continuation.resume(returning: self.determinePermissionSynchronously(askUser: askUser))
             }
         }
     }
@@ -65,19 +55,9 @@ nonisolated final class SpotifyScriptRunner: @unchecked Sendable {
         if let errorInfo {
             let number = (errorInfo["NSAppleScriptErrorNumber"] as? NSNumber)?.intValue ?? 0
             let message = (errorInfo["NSAppleScriptErrorMessage"] as? String) ?? ""
+            Log.media.error("AppleScript error number \(number, privacy: .public)")
             return .failure(SpotifyScriptFailure(appleScriptErrorNumber: number), message: message)
         }
         return .output(descriptor.stringValue ?? "")
-    }
-
-    private func determinePermissionSynchronously(askUser: Bool) -> Int32 {
-        guard SpotifyApp.isRunning else { return -600 }
-        let target = NSAppleEventDescriptor(bundleIdentifier: SpotifyApp.bundleID)
-        guard let targetDescriptor = target.aeDesc else { return -600 }
-        let status = withExtendedLifetime(target) {
-            AEDeterminePermissionToAutomateTarget(
-                targetDescriptor, AEEventClass(typeWildCard), AEEventID(typeWildCard), askUser)
-        }
-        return Int32(status)
     }
 }

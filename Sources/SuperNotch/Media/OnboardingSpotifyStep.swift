@@ -1,5 +1,8 @@
 // Owner: media stream. Onboarding step 3 (SPEC §A.11): ask for Automation permission for Spotify.
 // Hosted by `OnboardingView` (notch-shell) in a normal window (light or dark), so only semantic colours are used.
+// Every state shows what is going on and a way forward (`MediaPermissionPresentation`): waiting for Spotify or
+// macOS (spinner), "macOS didn't answer" (Try Again / Reset & Ask Again / System Settings), denied, the tccutil
+// command when the reset could not run.
 import AppKit
 import SuperNotchCore
 import SwiftUI
@@ -10,6 +13,7 @@ struct OnboardingSpotifyStep: View {
     init() {}
 
     var body: some View {
+        let presentation = media.permissionPresentation
         VStack(spacing: DesignTokens.Spacing.l) {
             Image(systemName: "music.note")
                 .font(.system(size: 34, weight: .regular))
@@ -26,12 +30,25 @@ struct OnboardingSpotifyStep: View {
             .multilineTextAlignment(.center)
             .fixedSize(horizontal: false, vertical: true)
 
-            MediaPermissionStatusLabel(permission: media.automationPermission)
+            MediaPermissionStatusLabel(presentation: presentation)
                 .font(.callout)
 
-            actions
+            if let detail = presentation.detail, presentation.tone != .allowed {
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
-            Text(hint)
+            if let command = presentation.terminalCommand {
+                MediaTerminalCommandView(command: command)
+                    .frame(maxWidth: 440)
+            }
+
+            actions(for: presentation)
+
+            Text(hint(for: presentation))
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
@@ -46,34 +63,23 @@ struct OnboardingSpotifyStep: View {
     }
 
     @ViewBuilder
-    private var actions: some View {
-        switch media.automationPermission {
-        case .granted:
+    private func actions(for presentation: MediaPermissionPresentation) -> some View {
+        if presentation.tone == .allowed {
             Label("Spotify is ready", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(DesignTokens.Colors.trafficGreen)
-        case .denied:
-            HStack {
-                Button("Open System Settings") { media.openAutomationSettings() }
-                    .buttonStyle(.borderedProminent)
-                Button("Check Again") { media.recheckAutomationPermission() }
-            }
-        case .unknown:
-            Button("Allow Access to Spotify") { media.requestAutomationPermission() }
-                .buttonStyle(.borderedProminent)
-        case .notRunning:
-            Button("Open Spotify and Allow Access") { media.requestAutomationPermission() }
-                .buttonStyle(.borderedProminent)
+        } else if !presentation.actions.isEmpty {
+            MediaPermissionActions(prominentPrimary: true)
         }
     }
 
-    private var hint: String {
-        switch media.automationPermission {
-        case .granted:
+    private func hint(for presentation: MediaPermissionPresentation) -> String {
+        switch presentation.tone {
+        case .allowed:
             return "You can change this any time in Settings > Music."
-        case .denied:
-            return "Turn on SuperNotch under Privacy & Security > Automation > Spotify, then come back."
-        case .unknown, .notRunning:
-            return "Spotify has to be running for macOS to ask. You can skip this step and allow it later in Settings > Music."
+        case .busy:
+            return "This can take a few seconds. Look for the macOS dialog."
+        case .attention, .blocked, .inactive:
+            return "You can skip this step and allow it later in Settings > Music."
         }
     }
 }

@@ -54,8 +54,19 @@ struct SpotifyCommandTests {
         #expect(SpotifyScriptFailure.other(1).impliedPermission == nil)
     }
 
-    @Test func settingsDeepLink() {
-        #expect(MediaSystemSettingsLink.automation == "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")
-        #expect(URL(string: MediaSystemSettingsLink.automation) != nil)
+    @Test func settingsDeepLinks() {
+        #expect(
+            MediaSystemSettingsLink.automation
+                == "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Automation")
+        #expect(
+            MediaSystemSettingsLink.legacyAutomation
+                == "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")
+        #expect(
+            MediaSystemSettingsLink.automationCandidates
+                == [MediaSystemSettingsLink.automation, MediaSystemSettingsLink.legacyAutomation])
+        for link in MediaSystemSettingsLink.automationCandidates {
+            #expect(URL(string: link) != nil)
+        }
+        #expect(MediaSystemSettingsLink.systemSettingsBundleID == "com.apple.systempreferences")
     }
 }

@@ -13,6 +13,7 @@ struct MediaSettingsSection: View {
 
     var body: some View {
         @Bindable var store = settingsStore
+        let presentation = media.permissionPresentation
         Form {
             Section {
                 Toggle("Enable Spotify", isOn: $store.settings.spotifyEnabled)
@@ -29,9 +30,20 @@ struct MediaSettingsSection: View {
 
             Section {
                 LabeledContent("Automation") {
-                    MediaPermissionStatusLabel(permission: media.automationPermission)
+                    MediaPermissionStatusLabel(presentation: presentation)
                 }
-                MediaPermissionActions()
+                if let detail = presentation.detail, presentation.tone != .allowed {
+                    Text(detail)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let command = presentation.terminalCommand {
+                    MediaTerminalCommandView(command: command)
+                }
+                if !presentation.actions.isEmpty {
+                    MediaPermissionActions()
+                }
             } header: {
                 Text("Permission")
             } footer: {
@@ -51,57 +63,87 @@ struct MediaSettingsSection: View {
     }
 }
 
-/// Status dot plus a short sentence for the current Automation state.
+/// Status dot (a spinner while a request runs) plus a short sentence for the current Automation state.
 struct MediaPermissionStatusLabel: View {
-    let permission: MediaAutomationPermission
+    let presentation: MediaPermissionPresentation
+
+    init(presentation: MediaPermissionPresentation) {
+        self.presentation = presentation
+    }
 
     var body: some View {
         HStack(spacing: DesignTokens.Spacing.s) {
-            Circle()
-                .fill(color)
-                .frame(width: 8, height: 8)
-            Text(text)
+            if presentation.isBusy {
+                ProgressView()
+                    .controlSize(.mini)
+            } else {
+                Circle()
+                    .fill(color)
+                    .frame(width: 8, height: 8)
+            }
+            Text(presentation.status)
                 .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
     }
 
     private var color: Color {
-        switch permission {
-        case .granted: return DesignTokens.Colors.trafficGreen
-        case .denied: return DesignTokens.Colors.trafficRed
-        case .unknown: return DesignTokens.Colors.warningOrange
-        case .notRunning: return DesignTokens.Colors.trafficGrey
-        }
-    }
-
-    private var text: String {
-        switch permission {
-        case .granted: return "Allowed"
-        case .denied: return "Not allowed"
-        case .unknown: return "Not allowed yet"
-        case .notRunning: return "Spotify isn't running"
+        switch presentation.tone {
+        case .allowed: return DesignTokens.Colors.trafficGreen
+        case .blocked: return DesignTokens.Colors.trafficRed
+        case .attention: return DesignTokens.Colors.warningOrange
+        case .inactive, .busy: return DesignTokens.Colors.trafficGrey
         }
     }
 }
 
-/// The buttons that fit the current state: ask, open System Settings, launch Spotify, re-check.
+/// The buttons that fit the current state (`MediaPermissionPresentation.actions`, primary first).
 struct MediaPermissionActions: View {
     @Environment(MediaModel.self) private var media
+    /// Onboarding draws the first button prominent.
+    let prominentPrimary: Bool
+
+    init(prominentPrimary: Bool = false) {
+        self.prominentPrimary = prominentPrimary
+    }
 
     var body: some View {
+        let actions = media.permissionPresentation.actions
         HStack(spacing: DesignTokens.Spacing.m) {
-            switch media.automationPermission {
-            case .granted:
-                EmptyView()
-            case .denied:
-                Button("Open System Settings") { media.openAutomationSettings() }
-            case .unknown:
-                Button("Allow Access") { media.requestAutomationPermission() }
-            case .notRunning:
-                Button("Open Spotify and Allow Access") { media.requestAutomationPermission() }
+            ForEach(actions, id: \.self) { action in
+                button(for: action, isPrimary: prominentPrimary && action == actions.first)
             }
-            Button("Check Again") { media.recheckAutomationPermission() }
         }
+    }
+
+    @ViewBuilder
+    private func button(for action: MediaPermissionAction, isPrimary: Bool) -> some View {
+        if isPrimary {
+            Button(action.title) { media.perform(action) }
+                .buttonStyle(.borderedProminent)
+        } else {
+            Button(action.title) { media.perform(action) }
+        }
+    }
+}
+
+/// The `tccutil` fallback: monospaced, selectable, copyable with the "Copy Command" action.
+struct MediaTerminalCommandView: View {
+    let command: String
+
+    init(command: String) {
+        self.command = command
+    }
+
+    var body: some View {
+        Text(command)
+            .font(.system(.callout, design: .monospaced))
+            .textSelection(.enabled)
+            .lineLimit(2)
+            .padding(.horizontal, DesignTokens.Spacing.m)
+            .padding(.vertical, DesignTokens.Spacing.s)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                .quaternary, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.medium, style: .continuous))
     }
 }

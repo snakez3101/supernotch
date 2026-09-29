@@ -46,7 +46,8 @@ public enum MediaAutomationPermission: String, Sendable, Equatable, CaseIterable
     case notRunning
 
     /// Maps `AEDeterminePermissionToAutomateTarget` results: noErr granted, -1743 denied, -1744 would need
-    /// consent (never asked), -600 target not running. Anything else stays unknown.
+    /// consent (never asked), -600 target not running. Anything else stays unknown. The connect flow uses the
+    /// stricter rules of `MediaPermissionFlow` / `merging(silent:into:)` instead.
     public init(osStatus: Int32) {
         switch osStatus {
         case 0: self = .granted
@@ -90,7 +91,14 @@ public enum SpotifyScriptFailure: Sendable, Equatable {
     }
 }
 
-/// System Settings deep link for Privacy & Security > Automation (SPEC §A.5).
+/// System Settings deep links for Privacy & Security > Automation (SPEC §A.5), tried in this order.
 public enum MediaSystemSettingsLink {
-    public static let automation = "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
+    /// macOS 13+ (System Settings).
+    public static let automation =
+        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Automation"
+    /// The System Preferences era link, used when the modern one does not open.
+    public static let legacyAutomation = "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
+    public static let automationCandidates = [automation, legacyAutomation]
+    /// Last resort: open System Settings itself.
+    public static let systemSettingsBundleID = "com.apple.systempreferences"
 }

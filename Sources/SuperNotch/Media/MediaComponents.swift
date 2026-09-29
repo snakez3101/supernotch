@@ -237,19 +237,29 @@ struct MediaScrubber: View {
 
 // MARK: - Empty / permission states
 
-/// Icon, one line of title, an optional detail and an optional glass button, centred in the column.
+/// Icon (or a spinner), one line of title, an optional detail and up to two small glass buttons, centred in the
+/// column.
 struct MediaEmptyStateView: View {
     let symbol: String
     let title: String
     var detail: String?
     var buttonTitle: String?
     var action: (() -> Void)?
+    var secondaryButtonTitle: String?
+    var secondaryAction: (() -> Void)?
+    var isBusy = false
 
     var body: some View {
         VStack(spacing: DesignTokens.Spacing.s) {
-            Image(systemName: symbol)
-                .font(.system(size: 22, weight: .regular))
-                .foregroundStyle(DesignTokens.Colors.secondaryText)
+            if isBusy {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(height: 26)
+            } else {
+                Image(systemName: symbol)
+                    .font(.system(size: 22, weight: .regular))
+                    .foregroundStyle(DesignTokens.Colors.secondaryText)
+            }
             Text(title)
                 .font(DesignTokens.Fonts.bodyEmphasized)
                 .foregroundStyle(DesignTokens.Colors.primaryText)
@@ -261,13 +271,28 @@ struct MediaEmptyStateView: View {
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
             }
-            if let buttonTitle, let action {
-                Button(buttonTitle, action: action)
-                    .buttonStyle(.glass)
-                    .controlSize(.small)
-                    .padding(.top, DesignTokens.Spacing.xxs)
+            if hasButtons {
+                HStack(spacing: DesignTokens.Spacing.s) {
+                    if let buttonTitle, let action {
+                        Button(buttonTitle, action: action)
+                            .buttonStyle(.glass)
+                            .controlSize(.small)
+                            .lineLimit(1)
+                    }
+                    if let secondaryButtonTitle, let secondaryAction {
+                        Button(secondaryButtonTitle, action: secondaryAction)
+                            .buttonStyle(.glass)
+                            .controlSize(.small)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.top, DesignTokens.Spacing.xxs)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var hasButtons: Bool {
+        (buttonTitle != nil && action != nil) || (secondaryButtonTitle != nil && secondaryAction != nil)
     }
 }
