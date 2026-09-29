@@ -74,9 +74,18 @@ nonisolated final class ShelfStore: @unchecked Sendable {
         await run { $0.sweepSync(keeping: items) }
     }
 
-    /// A fresh, empty folder for receiving file promises.
+    /// A fresh, empty folder for receiving file promises. Called on the main thread during a drop, so it does not
+    /// wait for the store queue (which may be busy copying a large file): one `mkdir` with its own FileManager.
     func makeIncomingFolder() -> URL? {
-        queue.sync { makeFolderSync(in: incomingDirectory) }
+        let folder = incomingDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        do {
+            try FileManager().createDirectory(at: folder, withIntermediateDirectories: true, attributes: nil)
+            return folder
+        } catch {
+            let reason = error.localizedDescription
+            Log.shelf.error("Could not create a folder for dropped files: \(reason, privacy: .public)")
+            return nil
+        }
     }
 
     /// Writes `text` into a temporary .txt file for AirDrop/Share (services often refuse plain strings).

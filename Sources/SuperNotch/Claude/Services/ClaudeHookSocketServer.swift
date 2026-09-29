@@ -16,14 +16,14 @@ import SuperNotchCore
 #endif
 
 nonisolated final class ClaudeHookSocketServer: @unchecked Sendable {
-    enum Event: Sendable {
+    nonisolated enum Event: Sendable {
         /// A decoded envelope. For `expectsReply` envelopes the connection stays open until `reply(...)`.
         case envelope(HookEnvelope)
         /// A held PermissionRequest connection closed before we answered it.
         case connectionClosed(requestID: String)
     }
 
-    struct StartError: Error, Sendable, CustomStringConvertible {
+    nonisolated struct StartError: Error, Sendable, CustomStringConvertible {
         let description: String
     }
 
@@ -39,8 +39,10 @@ nonisolated final class ClaudeHookSocketServer: @unchecked Sendable {
     private var handler: (@Sendable (Event) -> Void)?
     private var connections: [Int32: Connection] = [:]
     private var pendingByRequestID: [String: Int32] = [:]
+    /// We bound `path` (so `stop()` may remove it; never another instance's socket).
+    private var ownsSocketFile = false
 
-    private final class Connection {
+    private nonisolated final class Connection {
         let fd: Int32
         var source: DispatchSourceRead?
         var buffer = NDJSONLineBuffer(maxLineBytes: IPCConfig.maxMessageBytes)
@@ -99,7 +101,10 @@ nonisolated final class ClaudeHookSocketServer: @unchecked Sendable {
             connections.removeAll()
             pendingByRequestID.removeAll()
             handler = nil
-            unlink(path)
+            if ownsSocketFile {
+                unlink(path)
+                ownsSocketFile = false
+            }
         }
     }
 
@@ -163,11 +168,14 @@ nonisolated final class ClaudeHookSocketServer: @unchecked Sendable {
             Self.closeDescriptor(fd)
             throw StartError(description: "bind() failed: errno \(code)")
         }
+        ownsSocketFile = true
+        // Owner-only (SPEC §D.7). The folder is private too, and every peer's uid is checked on accept.
         chmod(path, 0o600)
         guard listen(fd, 64) == 0 else {
             let code = errno
             Self.closeDescriptor(fd)
             unlink(path)
+            ownsSocketFile = false
             throw StartError(description: "listen() failed: errno \(code)")
         }
 

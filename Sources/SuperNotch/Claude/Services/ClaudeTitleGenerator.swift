@@ -1,11 +1,12 @@
-// Owner: claude-app. Haiku short titles, used only when Claude Code has no usable title (SPEC §E.4).
+// Owner: claude-app. Haiku short titles, used only when Claude Code has no usable title (SPEC §E.4). The
+// store decides when (`titleGenerationNeeded`); prompt text and output cleaning are Core's `TitleResolver`.
 //
-//   claude -p --model haiku --no-session-persistence --max-turns 1 --output-format text "<prompt>"
+//   <claude invocation> -p --model haiku --no-session-persistence --max-turns 1 --output-format text "<prompt>"
 //
-// * cwd = a fresh empty temp dir, env SUPERNOTCH_INTERNAL=1 (our hook hides that session), 20 s timeout,
-//   at most 2 concurrent calls, a small hourly budget.
-// * At most once per session; results cached in `SuperNotchPaths.titleCache`. Titles are never written back.
-// * Prompts are never logged.
+// * cwd = a fresh empty temp dir, env SUPERNOTCH_INTERNAL=1 (our hook hides that session) and safe mode (no
+//   user hooks, MCP servers or CLAUDE.md), 20 s timeout, at most 2 concurrent calls, a small hourly budget.
+// * At most once per session, re-checked right before spawning; results cached in `SuperNotchPaths.titleCache`.
+//   Titles are never written back. Prompts are never logged.
 
 import Foundation
 import SuperNotchCore
@@ -15,49 +16,20 @@ nonisolated struct ClaudeTitleCacheEntry: Codable, Sendable, Hashable {
     var createdAt: Date
 }
 
-nonisolated enum ClaudeTitleText {
-    static let promptPrefix = "Summarise this coding task as a 2–4 word title. Reply with the title only.\n\n"
-    static let maxSourceCharacters = 1_500
-
-    static func prompt(for source: String) -> String {
-        promptPrefix + String(source.prefix(maxSourceCharacters))
-    }
-
-    /// Cleans Haiku's reply into a display title (nil if unusable).
-    static func sanitize(_ output: String) -> String? {
-        let wrappers = CharacterSet(charactersIn: "\"'`*#_“”‘’.:- ")
-        guard
-            var line = output.split(whereSeparator: \.isNewline).map({
-                $0.trimmingCharacters(in: .whitespaces)
-            }).first(where: { !$0.isEmpty })
-        else { return nil }
-        line = line.trimmingCharacters(in: wrappers)
-        for prefix in ["title:", "session title:", "task:"] where line.lowercased().hasPrefix(prefix) {
-            line = String(line.dropFirst(prefix.count))
-        }
-        line = line.trimmingCharacters(in: wrappers)
-        guard !line.isEmpty, line.count <= 80 else { return nil }
-        let lowered = line.lowercased()
-        let refusals = [
-            "i can't", "i cannot", "i'm sorry", "i am sorry", "sorry", "as an ai", "error", "i need more",
-            "usage limit", "rate limit", "not logged in", "please run", "invalid api key", "credit balance",
-        ]
-        if refusals.contains(where: { lowered.hasPrefix($0) }) || lowered.contains("api error") { return nil }
-        let short = TitleResolver.shorten(line)
-        return short.isEmpty ? nil : short
-    }
-}
-
 final class ClaudeTitleGenerator {
     nonisolated struct Request: Sendable {
         var sessionID: String
         var sourceText: String
+        /// The session's `HookContext.claudeInvocation` (argv prefix), if known.
+        var invocation: [String]?
         var executableHint: String?
         var configDirectory: String
     }
 
     /// Called on the main actor with (sessionID, title).
     var onTitle: ((String, String) -> Void)?
+    /// Asked right before spawning: false when a native title arrived meanwhile or the feature was turned off.
+    var isStillNeeded: ((String) -> Bool)?
 
     private let paths: SuperNotchPaths
     private let maxConcurrent = 2
@@ -114,6 +86,7 @@ final class ClaudeTitleGenerator {
                 return
             }
             let request = waiting.removeFirst()
+            guard isStillNeeded?(request.sessionID) ?? true else { continue }
             running.insert(request.sessionID)
             recentStarts.append(now)
             let home = paths.homeDirectory
@@ -134,13 +107,16 @@ final class ClaudeTitleGenerator {
 
     private nonisolated static func generate(_ request: Request, homeDirectory: String) async -> String? {
         let sourceText = request.sourceText
+        let invocation = request.invocation
         let hint = request.executableHint
         let configDirectory = request.configDirectory
-        return await Task.detached(priority: .utility) { () -> String? in
+        return await ClaudeBackground.run { () -> String? in
             let environment = ClaudeCLIEnvironment.shared
-            guard let executable = environment.claudeExecutable(homeDirectory: homeDirectory, hint: hint) else {
-                return nil
-            }
+            guard
+                let command = environment.claudeInvocation(
+                    homeDirectory: homeDirectory, reported: invocation, hint: hint),
+                let executable = command.first
+            else { return nil }
             let workDirectory = NSTemporaryDirectory() + "supernotch-title-" + UUID().uuidString
             do {
                 try FileManager.default.createDirectory(atPath: workDirectory, withIntermediateDirectories: true)
@@ -148,10 +124,11 @@ final class ClaudeTitleGenerator {
                 return nil
             }
             defer { try? FileManager.default.removeItem(atPath: workDirectory) }
-            let arguments = [
-                "-p", "--model", "haiku", "--no-session-persistence", "--max-turns", "1",
-                "--output-format", "text", ClaudeTitleText.prompt(for: sourceText),
-            ]
+            let arguments =
+                Array(command.dropFirst()) + [
+                    "-p", "--model", "haiku", "--no-session-persistence", "--max-turns", "1",
+                    "--output-format", "text", TitleResolver.haikuPrompt(for: sourceText),
+                ]
             guard
                 let output = ClaudeProcessRunner.runSync(
                     executable: executable, arguments: arguments,
@@ -160,8 +137,8 @@ final class ClaudeTitleGenerator {
                     currentDirectory: workDirectory, timeout: 20, maxOutputBytes: 16 * 1024),
                 output.succeeded
             else { return nil }
-            return ClaudeTitleText.sanitize(output.text)
-        }.value
+            return TitleResolver.sanitizeGenerated(output.text)
+        }
     }
 
     // MARK: - Cache

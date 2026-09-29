@@ -74,6 +74,12 @@ final class ShelfModel {
     @ObservationIgnored private var hasLoaded = false
     @ObservationIgnored private var settingsToken: SettingsStore.ObserverToken?
     @ObservationIgnored private var quickLookHold: NotchHoldToken?
+    /// Safety net for `.quickLookPreview` (SwiftUI owns the QLPreviewPanel): releases the hold if the preview
+    /// never appears (no panel controller found) or closes without resetting the binding.
+    @ObservationIgnored private var quickLookWatchdog: Timer?
+    @ObservationIgnored private var quickLookStartedAt = Date.distantPast
+    @ObservationIgnored private var quickLookBaselineWindows: Set<ObjectIdentifier> = []
+    @ObservationIgnored private var sawQuickLookWindow = false
     @ObservationIgnored private var dragOutHold: NotchHoldToken?
     @ObservationIgnored private var chooseFilesHold: NotchHoldToken?
     @ObservationIgnored private var cleanupTimer: Timer?
@@ -99,6 +105,7 @@ final class ShelfModel {
         isStarted = true
         dragDetector.onNearChange = { [weak self] near in self?.setDragActive(near) }
         dragDetector.geometryProvider = { [weak self] in self?.dragGeometry() }
+        dragDetector.isShelfOpenProvider = { [weak self] in self?.isShelfTabOnScreen ?? false }
         settingsToken = settingsStore.observe { [weak self] old, new in
             self?.settingsChanged(old: old, new: new)
         }
@@ -121,6 +128,7 @@ final class ShelfModel {
         dragDetector.stop()
         dragDetector.onNearChange = nil
         dragDetector.geometryProvider = nil
+        dragDetector.isShelfOpenProvider = nil
         settingsToken?.cancel()
         settingsToken = nil
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
@@ -582,6 +590,11 @@ final class ShelfModel {
         }
     }
 
+    /// The expanded Shelf tab is on screen (text/link drags over it may then be dropped).
+    private var isShelfTabOnScreen: Bool {
+        notch.presentation == .expanded(.shelf) && notch.isPanelVisible
+    }
+
     private func dragGeometry() -> (notch: CGRect, open: CGRect?)? {
         guard let geometry = notch.geometry else { return nil }
         let size = geometry.size(for: .expanded(.shelf), closedWidthExtra: 0)
@@ -592,6 +605,7 @@ final class ShelfModel {
         if isDragActive { notch.setFileDragActive(false) }
         chooseFilesHold?.release()
         chooseFilesHold = nil
+        stopQuickLookWatchdog()
         quickLookHold?.release()
         quickLookHold = nil
         dragOutHold?.release()
@@ -600,11 +614,54 @@ final class ShelfModel {
 
     private func quickLookSelectionChanged() {
         if quickLookURL != nil {
-            if quickLookHold == nil { quickLookHold = notch.holdOpen(reason: "shelf.quicklook") }
+            if quickLookHold == nil {
+                quickLookHold = notch.holdOpen(reason: "shelf.quicklook")
+                startQuickLookWatchdog()
+            }
         } else {
+            stopQuickLookWatchdog()
             quickLookHold?.release()
             quickLookHold = nil
             quickLookURLs = []
+        }
+    }
+
+    /// The Quick Look panel is one of our own windows: watch for it (1 s cadence, only while previewing).
+    private func startQuickLookWatchdog() {
+        stopQuickLookWatchdog()
+        quickLookStartedAt = Date()
+        sawQuickLookWindow = false
+        // A Quick Look panel still fading out from an earlier preview never counts as "already there".
+        quickLookBaselineWindows = Set(
+            NSApp.windows
+                .filter { $0.isVisible && !NSStringFromClass(type(of: $0)).contains("QLPreview") }
+                .map { ObjectIdentifier($0) })
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkQuickLook() }
+        }
+        timer.tolerance = 0.3
+        RunLoop.main.add(timer, forMode: .common)
+        quickLookWatchdog = timer
+    }
+
+    private func stopQuickLookWatchdog() {
+        quickLookWatchdog?.invalidate()
+        quickLookWatchdog = nil
+    }
+
+    private func checkQuickLook() {
+        guard quickLookURL != nil else {
+            stopQuickLookWatchdog()
+            return
+        }
+        let previewVisible = NSApp.windows.contains { window in
+            window.isVisible && !quickLookBaselineWindows.contains(ObjectIdentifier(window))
+        }
+        if previewVisible {
+            sawQuickLookWindow = true
+        } else if sawQuickLookWindow || Date().timeIntervalSince(quickLookStartedAt) > 3 {
+            if !sawQuickLookWindow { Log.shelf.notice("Quick Look did not appear; releasing the notch") }
+            quickLookURL = nil
         }
     }
 

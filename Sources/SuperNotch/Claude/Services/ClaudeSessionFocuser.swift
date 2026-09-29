@@ -7,7 +7,8 @@
 // | tmux            | tmux select-window/select-pane on $TMUX_PANE, then activate the terminal           |
 // | WezTerm         | wezterm cli activate-pane --pane-id $WEZTERM_PANE, then activate                   |
 // | others / VS Code| activate the app by bundle id                                                      |
-// | fallback        | walk the parent processes of the claude PID to the first GUI app and activate it   |
+// | fallback        | the host app the hook found (`HookContext.hostAppPath`), else walk the parent       |
+// |                 | processes of the claude PID to the first GUI app and activate it                   |
 //
 // AppleScript only targets apps that are already running (never launches them). Automation permission is
 // requested by macOS lazily, per host, on first use.
@@ -24,7 +25,8 @@ final class ClaudeSessionFocuser {
         self.homeDirectory = homeDirectory
     }
 
-    func focus(_ session: Session) {
+    /// `hostAppPath`: the enclosing `.app` of the GUI process hosting the session, as the hook reported it.
+    func focus(_ session: Session, hostAppPath: String? = nil) {
         let host = session.host
         Log.claude.debug("focus session host=\(host.kind.rawValue, privacy: .public)")
         if host.kind == .claudeDesktop {
@@ -33,7 +35,11 @@ final class ClaudeSessionFocuser {
         }
         if let pane = host.tmuxPane { selectTmuxPane(pane, tmuxEnvironment: host.tmux) }
         guard let bundleID = ClaudeHostApps.bundleID(for: host) else {
-            activateHostingApp(of: session)
+            if let hostAppPath, FileManager.default.fileExists(atPath: hostAppPath) {
+                openApplication(at: URL(fileURLWithPath: hostAppPath, isDirectory: true))
+            } else {
+                activateHostingApp(of: session)
+            }
             return
         }
         if bundleID == ClaudeHostApps.iTerm2 {
@@ -91,14 +97,7 @@ final class ClaudeSessionFocuser {
     /// to the parent-process walk when the app is unknown.
     private func activate(bundleID: String, session: Session?) {
         if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
-            let configuration = NSWorkspace.OpenConfiguration()
-            configuration.activates = true
-            configuration.addsToRecentItems = false
-            NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
-                if let error {
-                    Log.claude.error("activate failed: \(error.localizedDescription, privacy: .public)")
-                }
-            }
+            openApplication(at: url)
             return
         }
         if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
@@ -118,19 +117,26 @@ final class ClaudeSessionFocuser {
             guard let app = NSRunningApplication(processIdentifier: ancestor),
                 app.activationPolicy == .regular
             else { continue }
-            if let bundleID = app.bundleIdentifier, let url = app.bundleURL {
-                let configuration = NSWorkspace.OpenConfiguration()
-                configuration.activates = true
-                configuration.addsToRecentItems = false
-                NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
-                    if error != nil { Log.claude.info("fallback activation failed for \(bundleID, privacy: .public)") }
-                }
+            if let url = app.bundleURL {
+                openApplication(at: url)
             } else {
                 app.activate(options: [])
             }
             return
         }
         Log.claude.info("jump to chat: no GUI ancestor found")
+    }
+
+    /// Opens (activates) an app through LaunchServices, which works from a non-active accessory app.
+    private func openApplication(at url: URL) {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.addsToRecentItems = false
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
+            if let error {
+                Log.claude.info("activate failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     // MARK: - AppleScript

@@ -186,15 +186,19 @@ private struct ClaudeHookSettingsGroup: View {
                     ClaudeHookStatusLabel(status: claude.extraConfigStatuses[directory] ?? .unknown)
                 }
             }
-            if let error = claude.socketError {
-                Label("Session tracking is off: \(error)", systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-            }
-            if !claude.isClaudeCLIFound {
-                Text("The claude command was not found. Hooks still work; titles, usage checks and newer hook events need it.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+            Group {
+                if let error = claude.socketError {
+                    Label("Session tracking is off: \(error)", systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                }
+                if !claude.isClaudeCLIFound {
+                    Text(
+                        "The claude command was not found. Hooks still work; titles, usage checks and newer hook "
+                            + "events need it.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
             }
             DisclosureGroup("What gets added to settings.json") {
                 ClaudeHookPreview(text: claude.hookPreview)

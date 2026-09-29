@@ -70,9 +70,18 @@ nonisolated struct ClaudeHookInstaller: Sendable {
     func spec(for target: ClaudeHookInstallTarget, claudeVersion: ClaudeVersion?, wrapStatusLine: Bool)
         -> HookInstallSpec
     {
-        HookInstallSpec.make(
+        var spec = HookInstallSpec.make(
             hookBinaryPath: paths.hookBinary, claudeVersion: claudeVersion,
             wrapStatusLine: wrapStatusLine && target.isPrimary)
+        // Version unknown right now (CLI not found, e.g. before the first hook reported it): keep the event set of
+        // the last install instead of calling it "needs repair" and stripping the extended events.
+        if claudeVersion == nil, let manifest = loadManifest(at: target.manifestPath),
+            manifest.settingsFile == target.settingsFile
+        {
+            let previous = manifest.events.map { HookEventName(rawValue: $0) }
+            if !previous.isEmpty, Set(previous).isSuperset(of: spec.events) { spec.events = previous }
+        }
+        return spec
     }
 
     /// Exactly the JSON our entries add (onboarding / settings preview), incl. the wrapped status line.
@@ -82,7 +91,11 @@ nonisolated struct ClaudeHookInstaller: Sendable {
         if let status = settings?["statusLine"], !HookSettingsMerger.isOurs(status, marker: spec.marker) {
             original = status["command"]?.stringValue
         } else {
-            original = loadManifest(at: target.manifestPath)?.originalStatusLineCommand
+            // Ours is installed: the user's command is in the manifest, or inside our `--wrap '<orig>'` argument.
+            original =
+                loadManifest(at: target.manifestPath)?.originalStatusLineCommand
+                ?? settings?["statusLine"].flatMap { HookSettingsMerger.recoverWrappedStatusLine($0) }?["command"]?
+                .stringValue
         }
         return HookSettingsMerger.previewEntries(spec: spec, originalStatusLineCommand: original)
             .serialized(pretty: true)

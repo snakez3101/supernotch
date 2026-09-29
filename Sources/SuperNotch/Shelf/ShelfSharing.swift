@@ -4,6 +4,10 @@
 // held open (`NotchViewModel.holdOpen`), otherwise the "click outside closes" rule would tear it down.
 // AirDrop's didShare/didFail callbacks are unreliable, so a watchdog releases the hold once no extra window of
 // ours is visible any more (or after 2 s if the share UI never appeared in-process), capped at 5 minutes.
+// While the Share picker itself is open the 2 s rule is off (it may be a menu, which is not in `NSApp.windows`);
+// its delegate reports the choice (nil = dismissed), and the chosen service then gets a fresh 2 s grace.
+// The hold and the service object have separate lifetimes: releasing the hold never drops a service whose UI
+// may still be up (it is kept until it reports back or the next share starts).
 import AppKit
 import SuperNotchCore
 
@@ -14,6 +18,8 @@ final class ShelfSharingCoordinator: NSObject, NSSharingServiceDelegate, NSShari
     private var startedAt = Date.distantPast
     private var baselineWindows: Set<ObjectIdentifier> = []
     private var sawShareWindow = false
+    /// The Share picker is on screen and has not reported a choice yet.
+    private var isPickerOpen = false
     /// Keeps the service alive while it presents its UI (it only holds its delegate weakly).
     private var activeService: NSSharingService?
     private var activePicker: NSSharingServicePicker?
@@ -28,10 +34,8 @@ final class ShelfSharingCoordinator: NSObject, NSSharingServiceDelegate, NSShari
         NSSharingService(named: .sendViaAirDrop) != nil
     }
 
-    /// The system AirDrop icon, if the service exists.
-    static var airDropIcon: NSImage? {
-        NSSharingService(named: .sendViaAirDrop)?.image
-    }
+    /// The system AirDrop icon, if the service exists (looked up once; views ask on every render).
+    static let airDropIcon: NSImage? = NSSharingService(named: .sendViaAirDrop)?.image
 
     var isSharing: Bool { hold != nil }
 
@@ -48,6 +52,7 @@ final class ShelfSharingCoordinator: NSObject, NSSharingServiceDelegate, NSShari
             return false
         }
         begin(reason: "shelf.airdrop")
+        activeService?.delegate = nil
         service.delegate = self
         activeService = service
         service.perform(withItems: items)
@@ -62,11 +67,14 @@ final class ShelfSharingCoordinator: NSObject, NSSharingServiceDelegate, NSShari
         let picker = NSSharingServicePicker(items: items)
         picker.delegate = self
         activePicker = picker
+        isPickerOpen = true
         picker.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
     }
 
     func cancel() {
         finish()
+        activeService?.delegate = nil
+        activeService = nil
     }
 
     // MARK: Lifecycle
@@ -74,9 +82,7 @@ final class ShelfSharingCoordinator: NSObject, NSSharingServiceDelegate, NSShari
     private func begin(reason: String) {
         finish()
         hold = notch.holdOpen(reason: reason)
-        startedAt = Date()
-        sawShareWindow = false
-        baselineWindows = Set(NSApp.windows.filter(\.isVisible).map { ObjectIdentifier($0) })
+        restartGrace()
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkWatchdog() }
         }
@@ -85,25 +91,44 @@ final class ShelfSharingCoordinator: NSObject, NSSharingServiceDelegate, NSShari
         watchdog = timer
     }
 
+    /// Starts (again) the "did a share window appear?" bookkeeping.
+    private func restartGrace() {
+        startedAt = Date()
+        sawShareWindow = false
+        baselineWindows = Set(NSApp.windows.filter(\.isVisible).map { ObjectIdentifier($0) })
+    }
+
+    /// Releases the hold (the notch may close again). The service stays referenced until it reports back.
     private func finish() {
         watchdog?.invalidate()
         watchdog = nil
         hold?.release()
         hold = nil
-        activeService?.delegate = nil
-        activeService = nil
         activePicker = nil
+        isPickerOpen = false
     }
 
     private func checkWatchdog() {
+        let elapsed = Date().timeIntervalSince(startedAt)
+        if isPickerOpen {
+            if elapsed > 120 { finish() }
+            return
+        }
         let extraVisible = NSApp.windows.contains { window in
             window.isVisible && !baselineWindows.contains(ObjectIdentifier(window))
         }
         if extraVisible { sawShareWindow = true }
-        let elapsed = Date().timeIntervalSince(startedAt)
         if elapsed > 300 || (!extraVisible && (sawShareWindow || elapsed > 2)) {
             finish()
         }
+    }
+
+    /// The service reported back: release the hold and forget the service.
+    private func serviceFinished(_ service: NSSharingService) {
+        guard service === activeService || activeService == nil else { return }
+        finish()
+        activeService?.delegate = nil
+        activeService = nil
     }
 
     // MARK: NSSharingServiceDelegate (AppKit calls these on the main thread)
@@ -111,7 +136,7 @@ final class ShelfSharingCoordinator: NSObject, NSSharingServiceDelegate, NSShari
     nonisolated func sharingService(_ sharingService: NSSharingService, didShareItems items: [Any]) {
         MainActor.assumeIsolated {
             Log.shelf.info("Share finished")
-            self.finish()
+            self.serviceFinished(sharingService)
         }
     }
 
@@ -121,7 +146,7 @@ final class ShelfSharingCoordinator: NSObject, NSSharingServiceDelegate, NSShari
         let code = (error as NSError).code
         MainActor.assumeIsolated {
             Log.shelf.notice("Share ended without sending (code \(code, privacy: .public))")
-            self.finish()
+            self.serviceFinished(sharingService)
         }
     }
 
@@ -130,11 +155,17 @@ final class ShelfSharingCoordinator: NSObject, NSSharingServiceDelegate, NSShari
     nonisolated func sharingServicePicker(
         _ sharingServicePicker: NSSharingServicePicker, didChoose service: NSSharingService?
     ) {
-        let cancelled = service == nil
         MainActor.assumeIsolated {
             self.activePicker = nil
-            // A chosen service keeps the hold until it reports back (or the watchdog decides it is gone).
-            if cancelled { self.finish() }
+            self.isPickerOpen = false
+            guard let service else {
+                self.finish()
+                return
+            }
+            // The chosen service keeps the hold until it reports back (or the watchdog decides its UI is gone).
+            self.activeService?.delegate = nil
+            self.activeService = service
+            self.restartGrace()
         }
     }
 

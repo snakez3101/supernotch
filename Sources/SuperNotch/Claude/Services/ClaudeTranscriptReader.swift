@@ -5,12 +5,9 @@ import Foundation
 import SuperNotchCore
 
 nonisolated enum ClaudeTranscriptReader {
-    /// Bytes read from the start when the tail carries no title (long, resumed sessions write the
-    /// title records early).
-    static let headBytes = 16 * 1024
-
-    /// Reads the last `TranscriptTailParser.tailBytes` of `path` (plus the head when the tail has no title).
-    /// Nil when the file cannot be read. Blocking; call off the main thread.
+    /// Reads the last `TranscriptTailParser.tailBytes` of `path`, plus the first `headBytes` when the tail
+    /// carries no title (long, resumed sessions write their title records early). Nil when the file cannot be
+    /// read. Blocking; call off the main thread.
     static func readSignals(path: String) -> TranscriptSignals? {
         guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? handle.close() }
@@ -20,19 +17,12 @@ nonisolated enum ClaudeTranscriptReader {
             let offset = size > tail ? size - tail : 0
             try handle.seek(toOffset: offset)
             let data = try handle.readToEnd() ?? Data()
-            var signals = TranscriptTailParser.parse(tail: data, isTruncated: offset > 0)
+            let signals = TranscriptTailParser.parse(tail: data, isTruncated: offset > 0)
             let hasTitle = signals.customTitle != nil || signals.aiTitle != nil || signals.summary != nil
-            if offset > 0, !hasTitle {
-                try handle.seek(toOffset: 0)
-                let head = try handle.read(upToCount: headBytes) ?? Data()
-                // Only complete lines: drop the partial last line of the head.
-                let complete = head.lastIndex(of: 0x0A).map { head[head.startIndex...$0] } ?? Data()
-                let headSignals = TranscriptTailParser.parse(tail: Data(complete), isTruncated: false)
-                signals.customTitle = headSignals.customTitle
-                signals.aiTitle = headSignals.aiTitle
-                signals.summary = headSignals.summary
-            }
-            return signals
+            guard offset > 0, !hasTitle else { return signals }
+            try handle.seek(toOffset: 0)
+            let head = try handle.read(upToCount: TranscriptTailParser.headBytes) ?? Data()
+            return signals.fillingTitles(from: TranscriptTailParser.parse(head: head))
         } catch {
             return nil
         }

@@ -58,6 +58,9 @@ final class ShelfDragDetector {
     private var nearCandidateSince: TimeInterval?
     private var farCandidateSince: TimeInterval?
     private var watchdog: Timer?
+    /// One-shot re-check when the pointer stops inside the zone before the enter delay passed (a parked
+    /// pointer produces no more dragged events).
+    private var enterCheck: Timer?
 
     var isRunning: Bool { !monitors.isEmpty }
 
@@ -169,7 +172,11 @@ final class ShelfDragDetector {
             guard !isNear else { return }
             let since = nearCandidateSince ?? now
             nearCandidateSince = since
-            if now - since >= enterDelay { setNear(true) }
+            if now - since >= enterDelay {
+                setNear(true)
+            } else {
+                scheduleEnterCheck(after: enterDelay - (now - since))
+            }
         } else {
             nearCandidateSince = nil
             guard isNear else { return }
@@ -188,7 +195,33 @@ final class ShelfDragDetector {
         gesture = .idle
         nearCandidateSince = nil
         farCandidateSince = nil
+        enterCheck?.invalidate()
+        enterCheck = nil
         setNear(false)
+    }
+
+    private func scheduleEnterCheck(after delay: TimeInterval) {
+        guard enterCheck == nil else { return }
+        let timer = Timer(timeInterval: max(delay, 0) + 0.02, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.enterCheckFired() }
+        }
+        timer.tolerance = 0.02
+        RunLoop.main.add(timer, forMode: .common)
+        enterCheck = timer
+    }
+
+    private func enterCheckFired() {
+        enterCheck = nil
+        switch gesture {
+        case .fileDrag, .contentDrag:
+            if NSEvent.pressedMouseButtons & 1 == 0 {
+                gestureEnded()
+            } else {
+                updateNearState()
+            }
+        case .idle, .probing, .ignored:
+            break
+        }
     }
 
     private func setNear(_ near: Bool) {

@@ -22,13 +22,13 @@ struct ClaudeTrafficDot: View {
     }
 
     var body: some View {
+        // Sized with the font, not `.resizable()`: symbol effects need a real symbol image.
         Image(systemName: "circle.fill")
-            .resizable()
-            .aspectRatio(contentMode: .fit)
-            .frame(width: diameter, height: diameter)
+            .font(.system(size: diameter, weight: .regular))
             .foregroundStyle(DesignTokens.Colors.trafficLight(light))
-            .opacity(isDimmed ? 0.45 : 1)
             .symbolEffect(.pulse, options: .repeating, isActive: pulses)
+            .opacity(isDimmed ? 0.45 : 1)
+            .frame(width: diameter, height: diameter)
             .accessibilityLabel(ClaudeFormat.accessibilityLabel(for: light))
     }
 }

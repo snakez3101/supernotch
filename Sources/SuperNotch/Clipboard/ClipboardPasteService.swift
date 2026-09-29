@@ -5,10 +5,14 @@
 // * Paste = write, then post ⌘V with CGEvent. That needs the PostEvent permission (listed under
 //   Privacy & Security › Accessibility): `CGPreflightPostEventAccess` / `CGRequestPostEventAccess`. Without it
 //   we only copy and tell the user to press ⌘V.
-// * ⌘V is posted as virtual key 9 (kVK_ANSI_V): right for QWERTY/QWERTZ/AZERTY and "Dvorak – QWERTY ⌘".
+// * ⌘V is posted on the key that types "v" in the current keyboard layout (Dvorak, Colemak, …), found with
+//   `UCKeyTranslate`; layouts that switch to QWERTY while ⌘ is held ("Dvorak – QWERTY ⌘") and layouts without a
+//   "v" (Cyrillic, Greek, …, which use the ASCII-capable layout for shortcuts) are handled; fallback is
+//   kVK_ANSI_V (9). Text Input Source calls must run on the main thread, so the paste path is main-actor.
 // Pattern adapted from Maccy (MIT, © Alex Rodionov): marker type on own writes, writeObjects for file URLs,
-// CGEvent ⌘V on the session event tap.
+// CGEvent ⌘V on the session event tap with the left-⌘ device flag, forced QWERTY for "… ⌘" layouts.
 import AppKit
+import Carbon
 import CoreGraphics
 import SuperNotchCore
 
@@ -92,17 +96,71 @@ enum ClipboardPasteService {
         CGRequestPostEventAccess()
     }
 
-    /// Sends ⌘V to the frontmost app. Callers check `hasPostEventAccess` first.
-    nonisolated static func postCommandV() {
+    /// Sends ⌘V to the frontmost app. Callers check `hasPostEventAccess` first. Main thread only (layout lookup).
+    static func postCommandV() {
+        let vKey = commandVKeyCode()
         let source = CGEventSource(stateID: .combinedSessionState)
-        let vKey: CGKeyCode = 9  // kVK_ANSI_V
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: true),
             let keyUp = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: false)
         else { return }
-        keyDown.flags = .maskCommand
-        keyUp.flags = .maskCommand
+        // ⌘ plus the left-⌘ device bit (NX_DEVICELCMDKEYMASK): some apps check which ⌘ key is down.
+        let flags = CGEventFlags(rawValue: CGEventFlags.maskCommand.rawValue | 0x0000_0008)
+        keyDown.flags = flags
+        keyUp.flags = flags
         keyDown.post(tap: .cgSessionEventTap)
         keyUp.post(tap: .cgSessionEventTap)
+    }
+
+    // MARK: Keyboard layout (which key types "v")
+
+    /// kVK_ANSI_V: the "V" key position on ANSI/ISO keyboards.
+    private static let ansiVKeyCode: CGKeyCode = 9
+    /// U+0076 "v".
+    private static let lowercaseV: UniChar = 0x76
+
+    /// Virtual key code whose ⌘ shortcut is ⌘V in the current layout (falls back to 9).
+    private static func commandVKeyCode() -> CGKeyCode {
+        let current: Unmanaged<TISInputSource>? = TISCopyCurrentKeyboardLayoutInputSource()
+        guard let layout = current?.takeRetainedValue() else { return ansiVKeyCode }
+        // "Dvorak – QWERTY ⌘", "bépo – AZERTY ⌘": these type QWERTY/AZERTY while ⌘ is held (Maccy #482, #520).
+        if localizedName(of: layout).hasSuffix("⌘") { return ansiVKeyCode }
+        if let code = keyCode(typing: lowercaseV, in: layout) { return code }
+        // No "v" in this layout (Cyrillic, Greek, Hebrew, …): shortcuts use the ASCII-capable layout.
+        let ascii: Unmanaged<TISInputSource>? = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()
+        if let asciiLayout = ascii?.takeRetainedValue(), let code = keyCode(typing: lowercaseV, in: asciiLayout) {
+            return code
+        }
+        return ansiVKeyCode
+    }
+
+    private static func localizedName(of source: TISInputSource) -> String {
+        let raw: UnsafeMutableRawPointer? = TISGetInputSourceProperty(source, kTISPropertyLocalizedName)
+        guard let raw else { return "" }
+        return Unmanaged<CFString>.fromOpaque(raw).takeUnretainedValue() as String
+    }
+
+    /// The key (0…127) that types `character` without modifiers in `source`, nil if none does.
+    private static func keyCode(typing character: UniChar, in source: TISInputSource) -> CGKeyCode? {
+        let raw: UnsafeMutableRawPointer? = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)
+        guard let raw else { return nil }
+        let layoutData = Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue()
+        let bytes: UnsafePointer<UInt8>? = CFDataGetBytePtr(layoutData)
+        guard let bytes else { return nil }
+        let keyboardLayout = UnsafeRawPointer(bytes).assumingMemoryBound(to: UCKeyboardLayout.self)
+        let keyboardType = UInt32(LMGetKbdType())
+        let maxLength = 4
+        var characters = [UniChar](repeating: 0, count: maxLength)
+        for code in 0..<128 {
+            var deadKeyState: UInt32 = 0
+            var length = 0
+            let status = UCKeyTranslate(
+                keyboardLayout, UInt16(code), UInt16(kUCKeyActionDisplay), 0, keyboardType,
+                OptionBits(kUCKeyTranslateNoDeadKeysMask), &deadKeyState, maxLength, &length, &characters)
+            if status == 0, length == 1, characters[0] == character {
+                return CGKeyCode(code)
+            }
+        }
+        return nil
     }
 
     static func openAccessibilitySettings() {

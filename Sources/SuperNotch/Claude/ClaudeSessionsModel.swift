@@ -5,6 +5,9 @@
 //   transcript reads, Haiku titles, the user's answers ────────┼─► SessionStore.apply ─► effects ─► popups,
 //                                                              ┘                                  replies,
 //                                                                                                 titles…
+// Core owns the session rules (AskUserQuestion pass-through, stale cards, title timing); this file performs
+// effects. State survives restarts: usage in `UserDefaults` (`sn.claude.usage`, SPEC §D.9), visible sessions
+// in `claude-sessions.json` (Application Support), both restored on start. Liveness then drops dead ones.
 // Foundation + Observation only: AppKit lives in ClaudeSystemBridge / ClaudeSessionFocuser.
 
 import Foundation
@@ -60,12 +63,17 @@ final class ClaudeSessionsModel {
         apply(.permissionAnswered(requestID: requestID, decision: decision))
     }
 
-    /// "Answer in the chat instead": releases the held hook (Claude Code shows its own prompt) and jumps
-    /// to the session. Also the only action for question-type requests.
+    /// "Answer in the chat instead": releases the held hook (Claude Code shows its own prompt) and jumps to the
+    /// session. The row stays 🔴 because the native prompt is now waiting there.
     func answerInChat(requestID: String) {
         guard let request = store.permissions[requestID] else { return }
         source?.reply(requestID: requestID, decision: nil)
         apply(.permissionConnectionClosed(requestID: requestID))
+        apply(
+            .hook(
+                .synthetic(
+                    .notification, sessionID: request.sessionID, now: Date(),
+                    fields: [("notification_type", .string(NotificationType.permissionPrompt))])))
         focus(sessionID: request.sessionID)
     }
 
@@ -73,7 +81,7 @@ final class ClaudeSessionsModel {
     func focus(sessionID: String) {
         guard let session = store.sessions[sessionID] else { return }
         notch.withdraw(popupID: PopupRequest.claudeSessionID(sessionID))
-        focuser.focus(session)
+        focuser.focus(session, hostAppPath: hostAppPaths[sessionID])
     }
 
     // MARK: - Extra state for Settings / onboarding
@@ -106,11 +114,11 @@ final class ClaudeSessionsModel {
 
     let settings: SettingsStore
     let notch: NotchViewModel
-    private let paths: SuperNotchPaths
-    private let installer: ClaudeHookInstaller
-    private let titleGenerator: ClaudeTitleGenerator
-    private let focuser: ClaudeSessionFocuser
-    private let transcriptWatcher = ClaudeTranscriptWatcher()
+    @ObservationIgnored private let paths: SuperNotchPaths
+    @ObservationIgnored private let installer: ClaudeHookInstaller
+    @ObservationIgnored private let titleGenerator: ClaudeTitleGenerator
+    @ObservationIgnored private let focuser: ClaudeSessionFocuser
+    @ObservationIgnored private let transcriptWatcher = ClaudeTranscriptWatcher()
 
     @ObservationIgnored private var store = SessionStore()
     @ObservationIgnored private var source: ClaudeLocalSessionSource?
@@ -119,14 +127,14 @@ final class ClaudeSessionsModel {
     @ObservationIgnored private var isStarted = false
     @ObservationIgnored private var isApplying = false
     @ObservationIgnored private var pendingEvents: [SessionEvent] = []
-    @ObservationIgnored private var restoredUsage: UsageLimits?
     @ObservationIgnored private var usageExpiryTask: Task<Void, Never>?
-    @ObservationIgnored private var doneTasks: [String: Task<Void, Never>] = [:]
-    @ObservationIgnored private var titleTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var transcriptReadsInFlight: Set<String> = []
     @ObservationIgnored private var transcriptReadsDirty: Set<String> = []
-    @ObservationIgnored private var lastTranscriptSignals: [String: TranscriptSignals] = [:]
     @ObservationIgnored private var watchedTranscripts: [String: String] = [:]
+    /// Per session, from the hook context: the argv prefix that runs its Claude Code and its GUI host app.
+    @ObservationIgnored private var invocations: [String: [String]] = [:]
+    @ObservationIgnored private var hostAppPaths: [String: String] = [:]
+    @ObservationIgnored private var latestInvocation: [String]?
     @ObservationIgnored private var setupGeneration = 0
     @ObservationIgnored private var isPaused = false
     @ObservationIgnored private var discoveryRunning = false
@@ -134,8 +142,9 @@ final class ClaudeSessionsModel {
     static let usageDefaultsKey = "sn.claude.usage"
     static let extraConfigDirectoriesKey = "sn.claude-app.extraConfigDirectories"
     static let smokeTestEnvironmentKey = "SUPERNOTCH_SMOKE_TEST"
-    /// Wait for Claude Code's own ai-title before spending a Haiku call.
-    static let titleGrace: TimeInterval = 20
+    static let sessionsFileName = "claude-sessions.json"
+    /// Persisted sessions older than this are not restored.
+    static let sessionsMaxAge: TimeInterval = 7 * 86_400
 
     init(settings: SettingsStore, notch: NotchViewModel) {
         self.settings = settings
@@ -147,9 +156,8 @@ final class ClaudeSessionsModel {
         titleGenerator = ClaudeTitleGenerator(paths: paths)
         focuser = ClaudeSessionFocuser(homeDirectory: home)
         configDirectory = Self.resolveConfigDirectory(settings.settings, homeDirectory: home)
-        let persisted = Self.loadPersistedUsage()
-        restoredUsage = persisted
-        usage = persisted.flatMap { Self.pruned($0, now: Date()) }
+        store.restoreUsage(Self.loadPersistedUsage(), now: Date())
+        usage = store.usage
     }
 
     // MARK: - Lifecycle
@@ -159,6 +167,9 @@ final class ClaudeSessionsModel {
         isStarted = true
         titleGenerator.onTitle = { [weak self] sessionID, title in
             self?.apply(.titleGenerated(sessionID: sessionID, title: title))
+        }
+        titleGenerator.isStillNeeded = { [weak self] sessionID in
+            self?.titleStillNeeded(sessionID) ?? false
         }
         transcriptWatcher.onChange = { [weak self] sessionID in
             self?.refreshTranscript(sessionID)
@@ -174,7 +185,10 @@ final class ClaudeSessionsModel {
             onApplicationTerminated: { [weak self] bundleID in
                 if bundleID == SessionHost.claudeDesktopBundleID { self?.source?.handleDesktopTerminated() }
             })
-        if settings.settings.claudeEnabled { startSource() }
+        if settings.settings.claudeEnabled {
+            startSource()
+            restorePersistedSessions()
+        }
         refreshSetup(syncBinary: !Self.isSmokeTest, allowRepair: !Self.isSmokeTest)
         scheduleUsageExpiry()
     }
@@ -182,6 +196,8 @@ final class ClaudeSessionsModel {
     func stop() {
         guard isStarted else { return }
         isStarted = false
+        persistSessions()
+        persistUsage()
         settingsToken?.cancel()
         settingsToken = nil
         workspaceObserver?.invalidate()
@@ -191,6 +207,7 @@ final class ClaudeSessionsModel {
         usageExpiryTask = nil
         titleGenerator.cancelAll()
         titleGenerator.onTitle = nil
+        titleGenerator.isStillNeeded = nil
         transcriptWatcher.onChange = nil
     }
 
@@ -203,6 +220,8 @@ final class ClaudeSessionsModel {
         source.isDesktopAppRunning = {
             ClaudeSystemBridge.isApplicationRunning(bundleID: SessionHost.claudeDesktopBundleID)
         }
+        source.claudeInvocation = latestInvocation
+        source.allowsAgentsPolling = !Self.isSmokeTest
         source.start { [weak self] event in
             self?.apply(event)
         }
@@ -211,26 +230,24 @@ final class ClaudeSessionsModel {
         socketError = source.serverError
     }
 
-    /// Stops listening (held hooks fail open) and forgets every session.
+    /// Stops listening (held hooks fail open) and forgets every session (usage is kept).
     private func stopSource() {
         source?.stop()
         source = nil
         socketError = nil
         transcriptWatcher.stopAll()
         watchedTranscripts = [:]
-        for task in doneTasks.values { task.cancel() }
-        doneTasks = [:]
-        for task in titleTasks.values { task.cancel() }
-        titleTasks = [:]
         for request in store.permissions.values {
             notch.withdraw(popupID: PopupRequest.claudePermissionID(request.id))
         }
         for id in store.sessions.keys {
             notch.withdraw(popupID: PopupRequest.claudeSessionID(id))
         }
-        if let current = store.usage { restoredUsage = current }
+        let currentUsage = store.usage
         store = SessionStore()
-        lastTranscriptSignals = [:]
+        store.restoreUsage(currentUsage, now: Date())
+        invocations = [:]
+        hostAppPaths = [:]
         publish()
     }
 
@@ -252,11 +269,16 @@ final class ClaudeSessionsModel {
             noteConfigDirectory(
                 ClaudeConfigDiscovery.configDirectory(fromTranscriptPath: envelope.hook.transcriptPath)
                     ?? envelope.context.claudeConfigDir)
+            noteProcessInfo(envelope)
         }
         let now = Date()
         let effects = store.apply(event, now: now)
         publish()
         perform(effects, now: now)
+        syncSourceAndWatches()
+    }
+
+    private func syncSourceAndWatches() {
         source?.update(sessions: Array(store.sessions.values))
         updateTranscriptWatches()
     }
@@ -265,13 +287,11 @@ final class ClaudeSessionsModel {
     private func publish() {
         let visible = store.visibleSessions
         if visible != sessions { sessions = visible }
-        // Questions (AskUserQuestion) are never Allow/Deny cards: they are answered in the chat.
-        let pending = store.pendingPermissions.filter { !Self.isQuestionTool($0.toolName) }
+        let pending = store.pendingPermissions
         if pending != permissions { permissions = pending }
         let light = store.aggregateLight
         if light != aggregateLight { aggregateLight = light }
-        if store.usage != nil { restoredUsage = nil }
-        let current = (store.usage ?? restoredUsage).flatMap { Self.pruned($0, now: Date()) }
+        let current = store.usage.flatMap { Self.pruned($0, now: Date()) }
         if current != usage { usage = current }
     }
 
@@ -303,6 +323,20 @@ final class ClaudeSessionsModel {
         }
     }
 
+    /// Hook context facts the store does not keep: how to run this Claude Code, and which app hosts it.
+    private func noteProcessInfo(_ envelope: HookEnvelope) {
+        let context = envelope.context
+        guard !context.isInternal, let sessionID = envelope.hook.sessionID else { return }
+        if let invocation = context.claudeInvocation, !invocation.isEmpty {
+            invocations[sessionID] = invocation
+            if latestInvocation != invocation {
+                latestInvocation = invocation
+                source?.claudeInvocation = invocation
+            }
+        }
+        if let hostApp = context.hostAppPath, !hostApp.isEmpty { hostAppPaths[sessionID] = hostApp }
+    }
+
     // MARK: - Popups (SPEC §A.6)
 
     private func sessionAppeared(_ sessionID: String, now: Date) {
@@ -316,10 +350,9 @@ final class ClaudeSessionsModel {
     }
 
     private func sessionRemoved(_ sessionID: String) {
-        doneTasks.removeValue(forKey: sessionID)?.cancel()
-        titleTasks.removeValue(forKey: sessionID)?.cancel()
         titleGenerator.cancel(sessionID: sessionID)
-        lastTranscriptSignals[sessionID] = nil
+        invocations[sessionID] = nil
+        hostAppPaths[sessionID] = nil
         notch.withdraw(popupID: PopupRequest.claudeSessionID(sessionID))
     }
 
@@ -330,39 +363,29 @@ final class ClaudeSessionsModel {
             if from.isNeedsInput { notch.withdraw(popupID: popupID) }
             // 🟢 only for a turn that actually ran (not idle → done on an idle_prompt of a resumed session).
             guard from == .working || from.isNeedsInput else { return }
-            scheduleDonePopup(sessionID)
+            presentDone(sessionID, now: now)
         case .working, .idle:
-            doneTasks.removeValue(forKey: sessionID)?.cancel()
             notch.withdraw(popupID: popupID)
         case .needsInput(let kind):
-            doneTasks.removeValue(forKey: sessionID)?.cancel()
             guard let session = store.sessions[sessionID] else { return }
             if kind == .permission, hasCard(for: session) {
                 notch.withdraw(popupID: popupID)  // The permission card covers it.
-            } else if kind == .permission, !session.pendingPermissionIDs.isEmpty {
-                return  // Question-type request: `presentPermission` already popped the question peek.
             } else {
                 presentNeedsInput(session, now: now)
             }
         }
     }
 
-    /// 🟢 after the debounce (a 🟢 that turns 🟡 again within 0.8 s never pops up).
-    private func scheduleDonePopup(_ sessionID: String) {
-        doneTasks[sessionID]?.cancel()
-        doneTasks[sessionID] = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(NotchMetrics.popupDebounce))
-            guard !Task.isCancelled, let self else { return }
-            self.doneTasks[sessionID] = nil
-            let current = self.settings.settings
-            guard current.claudeEnabled, current.popupOnDone, let session = self.store.sessions[sessionID],
-                session.isVisible, session.phase == .done
-            else { return }
-            self.notch.present(
-                .claudeDone(
-                    sessionID: sessionID, hostAppBundleID: ClaudeHostApps.bundleID(for: session.host),
-                    autoDismissAfter: current.doneAutoCollapse, now: Date()))
-        }
+    /// 🟢 peek. The shell's popup queue holds `.info` requests back for `NotchMetrics.popupDebounce`, and a 🟢 that
+    /// turns 🟡 again is withdrawn above, so a quick flip never pops up (SPEC §A.6).
+    private func presentDone(_ sessionID: String, now: Date) {
+        let current = settings.settings
+        guard current.claudeEnabled, current.popupOnDone, let session = store.sessions[sessionID], session.isVisible
+        else { return }
+        notch.present(
+            .claudeDone(
+                sessionID: sessionID, hostAppBundleID: ClaudeHostApps.bundleID(for: session.host),
+                autoDismissAfter: current.doneAutoCollapse, now: now))
     }
 
     private func presentNeedsInput(_ session: Session, now: Date) {
@@ -376,13 +399,6 @@ final class ClaudeSessionsModel {
     private func presentPermission(_ requestID: String, now: Date) {
         guard let request = store.permissions[requestID] else { return }
         let session = store.sessions[request.sessionID]
-        if Self.isQuestionTool(request.toolName) {
-            // A question arrives as a PermissionRequest: Allow/Deny cannot answer it. Let Claude Code show
-            // its own question UI right away and pop the red "question" peek instead (click → chat).
-            source?.reply(requestID: requestID, decision: nil)
-            if let session { presentNeedsInput(session, now: now) }
-            return
-        }
         let current = settings.settings
         let expanded = notch.presentation.isExpanded
         let canShowCard = current.claudeEnabled && notch.geometry != nil && (current.popupOnNeedsInput || expanded)
@@ -397,22 +413,21 @@ final class ClaudeSessionsModel {
         notch.present(.claudePermission(requestID: requestID, hostAppBundleID: host, now: now))
     }
 
-    /// The session has a pending Allow/Deny card (not a question).
+    /// The session has a pending Allow/Deny card.
     private func hasCard(for session: Session) -> Bool {
-        session.pendingPermissionIDs.contains { id in
-            store.permissions[id].map { !Self.isQuestionTool($0.toolName) } ?? false
-        }
-    }
-
-    /// Tools whose "permission" prompt is really a question to the user.
-    static func isQuestionTool(_ toolName: String) -> Bool {
-        toolName == "AskUserQuestion"
+        session.pendingPermissionIDs.contains { store.permissions[$0] != nil }
     }
 
     // MARK: - Transcripts
 
+    /// `transcript_path` from the hooks, or the derived path for a session adopted from `claude agents`.
+    private func transcriptPath(for session: Session) -> String? {
+        if let path = session.transcriptPath, !path.isEmpty { return path }
+        return ClaudePaths(configDirectory: configDirectory).transcriptFile(cwd: session.cwd, sessionID: session.id)
+    }
+
     private func refreshTranscript(_ sessionID: String) {
-        guard let path = store.sessions[sessionID]?.transcriptPath, !path.isEmpty else { return }
+        guard let session = store.sessions[sessionID], transcriptPath(for: session) != nil else { return }
         if transcriptReadsInFlight.contains(sessionID) {
             transcriptReadsDirty.insert(sessionID)
             return
@@ -424,16 +439,17 @@ final class ClaudeSessionsModel {
 
     /// Reads the transcript off the main thread and applies new signals (identical reads are skipped).
     private func loadTranscript(_ sessionID: String) async {
-        guard let path = store.sessions[sessionID]?.transcriptPath, !path.isEmpty,
+        guard let session = store.sessions[sessionID], let path = transcriptPath(for: session),
             !transcriptReadsInFlight.contains(sessionID)
         else { return }
         transcriptReadsInFlight.insert(sessionID)
-        let signals = await Task.detached(priority: .utility) {
+        let signals = await ClaudeBackground.run {
             ClaudeTranscriptReader.readSignals(path: path)
-        }.value
+        }
         transcriptReadsInFlight.remove(sessionID)
-        if let signals, store.sessions[sessionID] != nil, lastTranscriptSignals[sessionID] != signals {
-            lastTranscriptSignals[sessionID] = signals
+        // Always report a successful read (even if unchanged): the store's title timing waits for a read after
+        // each turn. Identical results are cheap for the reducer.
+        if let signals, store.sessions[sessionID] != nil {
             apply(.transcript(sessionID: sessionID, signals))
         }
         if transcriptReadsDirty.remove(sessionID) != nil { refreshTranscript(sessionID) }
@@ -443,7 +459,7 @@ final class ClaudeSessionsModel {
     private func updateTranscriptWatches() {
         var targets: [String: String] = [:]
         for session in store.sessions.values where session.isVisible && session.phase == .working {
-            if let path = session.transcriptPath, !path.isEmpty { targets[session.id] = path }
+            if let path = transcriptPath(for: session) { targets[session.id] = path }
         }
         guard targets != watchedTranscripts else { return }
         watchedTranscripts = targets
@@ -452,36 +468,36 @@ final class ClaudeSessionsModel {
 
     // MARK: - Titles (SPEC §E.4)
 
+    /// The store asks only when Claude Code produced no title of its own after its first turn (Core's timing
+    /// rules); the generator re-checks `titleStillNeeded` right before spawning `claude -p`.
     private func scheduleTitleGeneration(_ sessionID: String) {
         if let cached = titleGenerator.cachedTitle(for: sessionID) {
             apply(.titleGenerated(sessionID: sessionID, title: cached))
             return
         }
-        guard settings.settings.generateTitlesWithHaiku, titleTasks[sessionID] == nil,
-            let startedAt = store.sessions[sessionID]?.startedAt
+        guard settings.settings.generateTitlesWithHaiku, !Self.isSmokeTest, let session = store.sessions[sessionID],
+            session.isVisible,
+            let text = TitleResolver.generationSource(session.titleCandidates, firstPrompt: session.firstPrompt)
         else { return }
-        // Claude Code writes its own ai-title after the first response: give it time (SPEC §E.4).
-        let delay = max(3, Self.titleGrace - Date().timeIntervalSince(startedAt))
-        titleTasks[sessionID] = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(delay), tolerance: .seconds(2))
-            guard !Task.isCancelled, let self else { return }
-            await self.loadTranscript(sessionID)
-            self.titleTasks[sessionID] = nil
-            guard self.settings.settings.generateTitlesWithHaiku, let session = self.store.sessions[sessionID],
-                session.isVisible,
-                TitleResolver.needsGeneration(session.titleCandidates, firstPrompt: session.firstPrompt),
-                let text = TitleResolver.generationSource(session.titleCandidates, firstPrompt: session.firstPrompt)
-            else { return }
-            self.titleGenerator.enqueue(
-                ClaudeTitleGenerator.Request(
-                    sessionID: sessionID, sourceText: text, executableHint: session.claudeExecutablePath,
-                    configDirectory: self.configDirectory))
-        }
+        titleGenerator.enqueue(
+            ClaudeTitleGenerator.Request(
+                sessionID: sessionID, sourceText: text, invocation: invocations[sessionID] ?? latestInvocation,
+                executableHint: session.claudeExecutablePath, configDirectory: configDirectory))
     }
 
-    // MARK: - Usage (SPEC §D.9)
+    private func titleStillNeeded(_ sessionID: String) -> Bool {
+        guard isStarted, settings.settings.generateTitlesWithHaiku, let session = store.sessions[sessionID],
+            session.isVisible
+        else { return false }
+        let candidates = session.titleCandidates
+        return TitleResolver.needsGeneration(candidates, firstPrompt: session.firstPrompt)
+            || (store.configuration.compressLongNativeTitles && TitleResolver.needsCompression(candidates))
+    }
+
+    // MARK: - Persistence (usage: SPEC §D.9; sessions: restored on the next launch)
 
     private func persistUsage() {
+        guard !Self.isSmokeTest else { return }
         let defaults = UserDefaults.standard
         guard let value = store.usage else {
             defaults.removeObject(forKey: Self.usageDefaultsKey)
@@ -491,14 +507,59 @@ final class ClaudeSessionsModel {
     }
 
     private static func loadPersistedUsage() -> UsageLimits? {
-        guard let data = UserDefaults.standard.data(forKey: usageDefaultsKey) else { return nil }
+        guard !isSmokeTest, let data = UserDefaults.standard.data(forKey: usageDefaultsKey) else { return nil }
         return try? JSONDecoder().decode(UsageLimits.self, from: data)
+    }
+
+    private var sessionsFilePath: String { paths.appSupport + "/" + Self.sessionsFileName }
+
+    /// Visible sessions whose liveness can be re-checked after a restart (a PID, or a Desktop row that follows
+    /// Claude Desktop). Written on quit (small file, mode 0600).
+    private func persistSessions() {
+        guard !Self.isSmokeTest else { return }
+        let path = sessionsFilePath
+        let keep = store.sessions.values.filter(Self.isRestorable).sorted { $0.id < $1.id }
+        guard !keep.isEmpty else {
+            try? FileManager.default.removeItem(atPath: path)
+            return
+        }
+        let state = ClaudePersistedSessions(version: ClaudePersistedSessions.currentVersion, savedAt: Date(), sessions: keep)
+        do {
+            try FileManager.default.createDirectory(atPath: paths.appSupport, withIntermediateDirectories: true)
+            try JSONEncoder().encode(state).write(to: URL(fileURLWithPath: path), options: [.atomic])
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+        } catch {
+            Log.claude.error("could not save Claude sessions: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Re-inserts the sessions saved on the last quit (the file is consumed). No popups for them; the source's
+    /// liveness check drops sessions whose process is gone (or whose PID was reused), `claude agents` refines.
+    private func restorePersistedSessions() {
+        guard !Self.isSmokeTest else { return }
+        let path = sessionsFilePath
+        guard let data = FileManager.default.contents(atPath: path) else { return }
+        try? FileManager.default.removeItem(atPath: path)
+        guard let state = try? JSONDecoder().decode(ClaudePersistedSessions.self, from: data),
+            state.version == ClaudePersistedSessions.currentVersion,
+            Date().timeIntervalSince(state.savedAt) < Self.sessionsMaxAge
+        else { return }
+        let restored = state.sessions.filter(Self.isRestorable)
+        guard !restored.isEmpty else { return }
+        _ = store.restoreSessions(restored, now: Date())
+        Log.claude.info("restored \(restored.count, privacy: .public) Claude session(s)")
+        publish()
+        syncSourceAndWatches()
+    }
+
+    private static func isRestorable(_ session: Session) -> Bool {
+        session.isVisible && (session.pid != nil || session.host.kind == .claudeDesktop)
     }
 
     /// Pruned copy, nil when no window is left.
     private static func pruned(_ usage: UsageLimits, now: Date) -> UsageLimits? {
         let value = usage.pruned(now: now)
-        return value.fiveHour == nil && value.sevenDay == nil ? nil : value
+        return value.isEmpty ? nil : value
     }
 
     /// One timer at the next reset time (no polling).
@@ -541,8 +602,6 @@ final class ClaudeSessionsModel {
             if hookStatus.hasOurEntries { installHooks() } else { refreshSetup(syncBinary: false, allowRepair: false) }
         }
         if old.generateTitlesWithHaiku && !new.generateTitlesWithHaiku {
-            for task in titleTasks.values { task.cancel() }
-            titleTasks = [:]
             titleGenerator.cancelAll()
         }
     }
@@ -588,9 +647,9 @@ final class ClaudeSessionsModel {
         isHookOperationRunning = true
         hookMessage = nil
         Task { [weak self] in
-            let outcome = await Task.detached(priority: .userInitiated) {
+            let outcome = await ClaudeBackground.run {
                 ClaudeHookOperations.uninstall(installer: installer, primary: primary, extras: extras)
-            }.value
+            }
             guard let self else { return }
             self.isHookOperationRunning = false
             self.hookMessage = outcome.message
@@ -620,9 +679,9 @@ final class ClaudeSessionsModel {
         let home = paths.homeDirectory
         let managed = [configDirectory] + installedExtraDirectories
         Task { [weak self] in
-            let found = await Task.detached(priority: .utility) {
+            let found = await ClaudeBackground.run {
                 ClaudeConfigDiscovery.candidates(homeDirectory: home, managed: managed)
-            }.value
+            }
             guard let self else { return }
             self.discoveryRunning = false
             for directory in found { self.noteConfigDirectory(directory) }
@@ -635,15 +694,13 @@ final class ClaudeSessionsModel {
         hookMessage = nil
         let installer = self.installer
         let wrap = settings.settings.wrapStatusLine
-        let hint = executableHint
-        let home = paths.homeDirectory
-        let sources = Self.isSmokeTest ? [] : Self.hookSourceCandidates()
+        let cli = cliLookup
+        let sources = Self.hookSourceCandidates()
         Task { [weak self] in
-            let outcome = await Task.detached(priority: .userInitiated) {
+            let outcome = await ClaudeBackground.run {
                 ClaudeHookOperations.install(
-                    installer: installer, target: target, wrapStatusLine: wrap, executableHint: hint,
-                    homeDirectory: home, hookSources: sources)
-            }.value
+                    installer: installer, target: target, wrapStatusLine: wrap, cli: cli, hookSources: sources)
+            }
             guard let self else { return }
             self.isHookOperationRunning = false
             self.hookMessage = outcome.message
@@ -665,20 +722,19 @@ final class ClaudeSessionsModel {
         let generation = setupGeneration
         let installer = self.installer
         let primary = installer.primaryTarget(configDirectory: configDirectory)
-        let extras = installedExtraDirectories.map { installer.secondaryTarget(configDirectory: $0) }
+        // Smoke test (SPEC §D.10): no `claude` spawns, no files outside the temp config folder.
+        let extras =
+            Self.isSmokeTest ? [] : installedExtraDirectories.map { installer.secondaryTarget(configDirectory: $0) }
         let wrap = settings.settings.wrapStatusLine
-        let hint = executableHint
-        let home = paths.homeDirectory
+        let cli = cliLookup
         let sources = syncBinary ? Self.hookSourceCandidates() : []
-        // Smoke test (SPEC §D.10): no `claude` spawns, no writes outside the temp config folder.
         let resolveCLI = !Self.isSmokeTest
         Task { [weak self] in
-            let result = await Task.detached(priority: .utility) {
+            let result = await ClaudeBackground.run {
                 ClaudeHookOperations.setup(
-                    installer: installer, primary: primary, extras: extras, wrapStatusLine: wrap,
-                    executableHint: hint, homeDirectory: home, hookSources: sources, allowRepair: allowRepair,
-                    resolveCLI: resolveCLI)
-            }.value
+                    installer: installer, primary: primary, extras: extras, wrapStatusLine: wrap, cli: cli,
+                    hookSources: sources, allowRepair: allowRepair, resolveCLI: resolveCLI)
+            }
             guard let self, generation == self.setupGeneration else { return }
             self.hookStatus = result.status
             self.extraConfigStatuses = result.extraStatuses
@@ -689,8 +745,12 @@ final class ClaudeSessionsModel {
         }
     }
 
-    private var executableHint: String? {
-        store.sessions.values.lazy.compactMap(\.claudeExecutablePath).first { !$0.hasSuffix(".js") }
+    /// What the background lookup of the `claude` CLI starts from.
+    private var cliLookup: ClaudeCLILookup {
+        ClaudeCLILookup(
+            homeDirectory: paths.homeDirectory, invocation: latestInvocation,
+            executableHint: store.sessions.values.lazy.compactMap(\.claudeExecutablePath)
+                .first(where: ClaudeCLIEnvironment.isUsableHint))
     }
 
     private var installedExtraDirectories: [String] {
@@ -722,6 +782,23 @@ final class ClaudeSessionsModel {
     }
 }
 
+/// Sessions saved on quit (`claude-sessions.json` in Application Support).
+nonisolated struct ClaudePersistedSessions: Codable, Sendable {
+    static let currentVersion = 1
+    var version: Int
+    var savedAt: Date
+    var sessions: [Session]
+}
+
+/// Inputs for finding the `claude` CLI off the main thread.
+nonisolated struct ClaudeCLILookup: Sendable {
+    var homeDirectory: String
+    /// Latest `HookContext.claudeInvocation`.
+    var invocation: [String]?
+    /// A session's executable path that is the real binary (not `node`).
+    var executableHint: String?
+}
+
 // MARK: - Background hook operations
 
 nonisolated struct ClaudeHookOperationOutcome: Sendable {
@@ -742,8 +819,8 @@ nonisolated struct ClaudeSetupResult: Sendable {
 /// Blocking installer work, run from detached tasks.
 nonisolated enum ClaudeHookOperations {
     static func install(
-        installer: ClaudeHookInstaller, target: ClaudeHookInstallTarget, wrapStatusLine: Bool,
-        executableHint: String?, homeDirectory: String, hookSources: [String]
+        installer: ClaudeHookInstaller, target: ClaudeHookInstallTarget, wrapStatusLine: Bool, cli: ClaudeCLILookup,
+        hookSources: [String]
     ) -> ClaudeHookOperationOutcome {
         if !hookSources.isEmpty {
             switch installer.syncHookBinary(sourceCandidates: hookSources) {
@@ -753,7 +830,7 @@ nonisolated enum ClaudeHookOperations {
                 break
             }
         }
-        let version = claudeVersion(executableHint: executableHint, homeDirectory: homeDirectory).version
+        let version = claudeVersion(cli).version
         let spec = installer.spec(for: target, claudeVersion: version, wrapStatusLine: wrapStatusLine)
         do {
             let outcome = try installer.install(into: target, spec: spec)
@@ -785,8 +862,7 @@ nonisolated enum ClaudeHookOperations {
 
     static func setup(
         installer: ClaudeHookInstaller, primary: ClaudeHookInstallTarget, extras: [ClaudeHookInstallTarget],
-        wrapStatusLine: Bool, executableHint: String?, homeDirectory: String, hookSources: [String],
-        allowRepair: Bool, resolveCLI: Bool
+        wrapStatusLine: Bool, cli: ClaudeCLILookup, hookSources: [String], allowRepair: Bool, resolveCLI: Bool
     ) -> ClaudeSetupResult {
         var message: String?
         if !hookSources.isEmpty {
@@ -801,11 +877,8 @@ nonisolated enum ClaudeHookOperations {
                 break
             }
         }
-        let cli =
-            resolveCLI
-            ? claudeVersion(executableHint: executableHint, homeDirectory: homeDirectory)
-            : (executable: nil, version: nil)
-        let spec = installer.spec(for: primary, claudeVersion: cli.version, wrapStatusLine: wrapStatusLine)
+        let found = resolveCLI ? claudeVersion(cli) : (executable: nil, version: nil)
+        let spec = installer.spec(for: primary, claudeVersion: found.version, wrapStatusLine: wrapStatusLine)
         var status = installer.status(of: primary, spec: spec)
         if allowRepair, case .needsRepair = status, installer.hasManifest(for: primary) {
             do {
@@ -818,7 +891,7 @@ nonisolated enum ClaudeHookOperations {
         }
         var extraStatuses: [String: ClaudeHookStatus] = [:]
         for extra in extras {
-            let extraSpec = installer.spec(for: extra, claudeVersion: cli.version, wrapStatusLine: false)
+            let extraSpec = installer.spec(for: extra, claudeVersion: found.version, wrapStatusLine: false)
             var extraStatus = installer.status(of: extra, spec: extraSpec)
             if allowRepair, case .needsRepair = extraStatus, installer.hasManifest(for: extra),
                 let outcome = try? installer.install(into: extra, spec: extraSpec)
@@ -829,16 +902,17 @@ nonisolated enum ClaudeHookOperations {
         }
         return ClaudeSetupResult(
             status: status, extraStatuses: extraStatuses, preview: installer.preview(for: primary, spec: spec),
-            version: cli.version?.description, executablePath: cli.executable, message: message)
+            version: found.version?.description, executablePath: found.executable, message: message)
     }
 
-    private static func claudeVersion(executableHint: String?, homeDirectory: String)
-        -> (executable: String?, version: ClaudeVersion?)
-    {
+    private static func claudeVersion(_ cli: ClaudeCLILookup) -> (executable: String?, version: ClaudeVersion?) {
         let environment = ClaudeCLIEnvironment.shared
-        guard let executable = environment.claudeExecutable(homeDirectory: homeDirectory, hint: executableHint) else {
-            return (nil, nil)
-        }
-        return (executable, environment.claudeVersion(executable: executable, homeDirectory: homeDirectory))
+        guard
+            let invocation = environment.claudeInvocation(
+                homeDirectory: cli.homeDirectory, reported: cli.invocation, hint: cli.executableHint)
+        else { return (nil, nil) }
+        return (
+            invocation.last, environment.claudeVersion(invocation: invocation, homeDirectory: cli.homeDirectory)
+        )
     }
 }

@@ -9,8 +9,12 @@
 // * Dangerous commands: red tint + reason chips; Allow / Always allow need a second click within 4 s
 //   ("Confirm allow"); Return needs the same confirm step.
 // * Return = Allow, Esc = Deny, only while the panel is key (typing in a terminal never approves, §A.4).
+//   Handled by an AppKit key monitor while the peek card is on screen (works even when SwiftUI focus did not
+//   land on the card), with `onKeyPress` as the SwiftUI path. Key auto-repeat never answers.
 // * Answered in the terminal / timed out: the request disappears from the model and the card with it.
+// * Subagent requests show on the parent session's card, labelled with the agent type.
 
+import AppKit
 import SuperNotchCore
 import SwiftUI
 
@@ -33,6 +37,7 @@ struct PermissionCardView: View {
     @State private var armed: ArmedAction?
     @State private var disarmTask: Task<Void, Never>?
     @State private var holdToken: NotchHoldToken?
+    @State private var keyMonitor: ClaudePermissionKeyMonitor?
     @FocusState private var isFocused: Bool
 
     private enum ArmedAction: Equatable {
@@ -101,10 +106,12 @@ struct PermissionCardView: View {
         .focusable(isPeek)
         .focused($isFocused)
         .focusEffectDisabled()
-        .onKeyPress(.return) { handleReturn(request) }
-        .onKeyPress(.escape) { handleEscape(request) }
+        .onKeyPress(.return, phases: .down) { _ in handleReturn(requestID: request.id) ? .handled : .ignored }
+        .onKeyPress(.escape, phases: .down) { _ in handleEscape(requestID: request.id) ? .handled : .ignored }
         .onAppear {
-            if isPeek && notch.isKeyFocused { isFocused = true }
+            guard isPeek else { return }
+            if notch.isKeyFocused { isFocused = true }
+            installKeyMonitor()
         }
         .onChange(of: notch.isKeyFocused) { _, focused in
             if isPeek && focused { isFocused = true }
@@ -122,6 +129,8 @@ struct PermissionCardView: View {
             holdToken?.release()
             holdToken = nil
             disarmTask?.cancel()
+            keyMonitor?.remove()
+            keyMonitor = nil
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Claude wants to use \(request.toolName): \(request.summary)")
@@ -132,7 +141,7 @@ struct PermissionCardView: View {
             Image(systemName: ClaudeFormat.symbol(forTool: request.toolName))
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(request.danger.isDangerous ? DesignTokens.Colors.danger : DesignTokens.Colors.secondaryText)
-            Text(ClaudeFormat.toolDisplayName(request.toolName))
+            Text(toolLabel(request))
                 .font(DesignTokens.Fonts.caption)
                 .foregroundStyle(DesignTokens.Colors.secondaryText)
                 .lineLimit(1)
@@ -179,7 +188,7 @@ struct PermissionCardView: View {
                 .buttonStyle(ClaudeCapsuleButtonStyle(kind: .neutral))
                 .help("Deny (Esc)")
             if request.canAlwaysAllow {
-                Button(armed == .alwaysAllow ? "Confirm" : alwaysAllowTitle(request)) { alwaysAllow(request) }
+                Button(armed == .alwaysAllow ? "Confirm" : request.alwaysAllowTitle) { alwaysAllow(request) }
                     .buttonStyle(ClaudeCapsuleButtonStyle(kind: armed == .alwaysAllow ? .danger : .neutral))
                     .help(alwaysAllowHelp(request))
             }
@@ -247,37 +256,53 @@ struct PermissionCardView: View {
         }
     }
 
-    private func handleReturn(_ request: PermissionRequest) -> KeyPress.Result {
-        guard notch.isKeyFocused else { return .ignored }
+    /// Return = Allow (with the confirm step for dangerous commands). True when handled.
+    private func handleReturn(requestID: String) -> Bool {
+        guard notch.isKeyFocused, let request = claude.permission(id: requestID) else { return false }
         allow(request)
-        return .handled
+        return true
     }
 
-    private func handleEscape(_ request: PermissionRequest) -> KeyPress.Result {
-        guard notch.isKeyFocused else { return .ignored }
+    /// Esc = Deny, or disarm a pending "Confirm allow". True when handled.
+    private func handleEscape(requestID: String) -> Bool {
+        guard notch.isKeyFocused, let request = claude.permission(id: requestID) else { return false }
         if armed != nil {
             armed = nil
             disarmTask?.cancel()
-            return .handled
+            return true
         }
         deny(request)
-        return .handled
+        return true
+    }
+
+    private func installKeyMonitor() {
+        let monitor = keyMonitor ?? ClaudePermissionKeyMonitor()
+        let notch = notch
+        let requestID = requestID
+        monitor.install(isEnabled: { notch.isKeyFocused }) { key in
+            switch key {
+            case .confirm: return handleReturn(requestID: requestID)
+            case .cancel: return handleEscape(requestID: requestID)
+            }
+        }
+        keyMonitor = monitor
     }
 
     // MARK: - Labels
+
+    /// "Bash", or "Bash · Explore agent" for a subagent's request (the card sits on the parent session).
+    private func toolLabel(_ request: PermissionRequest) -> String {
+        let tool = ClaudeFormat.toolDisplayName(request.toolName)
+        guard request.isFromSubagent else { return tool }
+        let agent = request.agentType.map { $0.isEmpty ? "subagent" : "\($0) agent" } ?? "subagent"
+        return "\(tool) · \(agent)"
+    }
 
     /// "1 of 3" when several requests wait (oldest first).
     private func position(of request: PermissionRequest) -> String? {
         let all = claude.permissions
         guard all.count > 1, let index = all.firstIndex(where: { $0.id == request.id }) else { return nil }
         return "\(index + 1) of \(all.count)"
-    }
-
-    /// "Allow for session" when the suggestion only lasts for this session, else "Always allow".
-    private func alwaysAllowTitle(_ request: PermissionRequest) -> String {
-        guard case .allowAlways(let updates) = request.alwaysAllowDecision else { return "Always allow" }
-        let destinations = Set(updates.compactMap { $0["destination"]?.stringValue })
-        return destinations == ["session"] ? "Allow for session" : "Always allow"
     }
 
     private func alwaysAllowHelp(_ request: PermissionRequest) -> String {
@@ -288,5 +313,46 @@ struct PermissionCardView: View {
         if destinations.contains("localSettings") { return "Allow and add a rule to the local project settings" }
         if destinations == ["session"] { return "Allow for the rest of this session" }
         return "Allow and remember"
+    }
+}
+
+/// AppKit fallback for Return / Esc on the peek card. SwiftUI's `onKeyPress` only fires while the card holds
+/// focus, which a non-activating panel does not always give it; a local monitor sees every key event sent to
+/// our windows. Keys count only when `isEnabled` (the notch panel is key, SPEC §A.4) and the event's window is
+/// key; modified keys pass through, and auto-repeat is swallowed so holding Return never answers (or confirms
+/// a dangerous command) twice.
+private final class ClaudePermissionKeyMonitor {
+    enum Key {
+        case confirm
+        case cancel
+    }
+
+    private var token: Any?
+
+    /// `handler` returns true when it used the key (the event is then consumed).
+    func install(isEnabled: @escaping () -> Bool, handler: @escaping (Key) -> Bool) {
+        remove()
+        token = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let consumed = MainActor.assumeIsolated { () -> Bool in
+                guard isEnabled(), let window = event.window, window.isKeyWindow else { return false }
+                guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else {
+                    return false
+                }
+                let key: Key
+                switch event.keyCode {
+                case 36, 76: key = .confirm  // Return, keypad Enter
+                case 53: key = .cancel  // Esc
+                default: return false
+                }
+                if event.isARepeat { return true }
+                return handler(key)
+            }
+            return consumed ? nil : event
+        }
+    }
+
+    func remove() {
+        if let token { NSEvent.removeMonitor(token) }
+        token = nil
     }
 }
