@@ -23,7 +23,7 @@ struct MediaSettingsSection: View {
             } footer: {
                 Text(
                     "Shows the current track and controls the Spotify desktop app: play, pause, skip and seek. "
-                        + "There is no Spotify login, and nothing leaves your Mac."
+                        + "There is no Spotify login; only cover images are loaded from Spotify."
                 )
             }
 

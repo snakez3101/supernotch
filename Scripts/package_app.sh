@@ -142,6 +142,15 @@ PB=/usr/libexec/PlistBuddy
 plutil -lint "$PLIST" >/dev/null || die "Info.plist is not valid after version substitution"
 info "Info.plist: version $VERSION_NUM ($BUILD_NUMBER), bundle id $("$PB" -c 'Print :CFBundleIdentifier' "$PLIST")"
 
+# Licence texts: Settings > About reads NOTICE from Contents/Resources (and links to GitHub without it).
+# Copied before signing so they are part of the sealed resources.
+for legal in NOTICE LICENSE; do
+  [[ -f $legal ]] || die "$legal not found in $ROOT (it is shipped in Contents/Resources)"
+  cp "$legal" "$APP/Contents/Resources/$legal"
+  chmod 644 "$APP/Contents/Resources/$legal"
+done
+info "NOTICE and LICENSE copied to Contents/Resources"
+
 # SwiftPM resource bundles (if any target ever declares resources) go to Contents/Resources.
 shopt -s nullglob
 for bundle in "$BIN_DIR"/*.bundle; do

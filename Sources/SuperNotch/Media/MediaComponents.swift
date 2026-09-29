@@ -49,6 +49,7 @@ struct MediaMarqueeText: View {
     /// Scroll speed in points per second.
     private let speed: CGFloat = 24
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var textWidth: CGFloat = 0
     @State private var viewportWidth: CGFloat = 0
     @State private var offset: CGFloat = 0
@@ -63,18 +64,27 @@ struct MediaMarqueeText: View {
 
     var body: some View {
         GeometryReader { proxy in
-            Text(text)
-                .font(font)
-                .lineLimit(1)
-                .fixedSize()
-                .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { textWidth = $0 })
-                .offset(x: offset)
-                .frame(width: proxy.size.width, alignment: .leading)
-                .onChange(of: proxy.size.width, initial: true) { _, newWidth in viewportWidth = newWidth }
+            if reduceMotion {
+                // No scrolling with Reduce Motion: plain truncation.
+                Text(text)
+                    .font(font)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(width: proxy.size.width, alignment: .leading)
+            } else {
+                Text(text)
+                    .font(font)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { textWidth = $0 })
+                    .offset(x: offset)
+                    .frame(width: proxy.size.width, alignment: .leading)
+                    .onChange(of: proxy.size.width, initial: true) { _, newWidth in viewportWidth = newWidth }
+            }
         }
         .frame(height: height)
         .clipped()
-        .task(id: "\(text)|\(Int(overflow.rounded()))") { await runMarquee() }
+        .task(id: "\(text)|\(Int(overflow.rounded()))|\(reduceMotion)") { await runMarquee() }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(text)
     }
@@ -82,7 +92,7 @@ struct MediaMarqueeText: View {
     private func runMarquee() async {
         withAnimation(.linear(duration: 0.01)) { offset = 0 }
         let distance = overflow
-        guard distance > 2 else { return }
+        guard distance > 2, !reduceMotion else { return }
         try? await Task.sleep(for: .seconds(1.4))
         guard !Task.isCancelled else { return }
         let duration = max(1.2, Double(distance / speed))

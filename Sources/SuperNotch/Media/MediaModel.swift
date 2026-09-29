@@ -6,8 +6,10 @@
 //   one batched AppleScript (background queue) ───────────────┘     views from `positionSeconds/Timestamp`)
 //
 // The AppleScript only runs (a) after a notification, (b) when the Home tab opens, (c) every few seconds while the
-// Home tab is visible AND Spotify is playing, (d) once shortly after a track should have ended. While the notch is
-// closed there are no timers and no Apple Events: the island only needs the cover and the playing flag.
+// Home tab is visible AND Spotify is playing, (d) shortly after a track should have ended (a dormant one-shot while
+// playing, at most twice per track, normally cancelled by the track-change notification). Nothing polls while
+// paused, while the notch is closed, or while Spotify is not running; the island only needs the cover and the
+// playing flag, which the notifications deliver.
 import AppKit
 import Foundation
 import Observation
@@ -60,6 +62,9 @@ final class MediaModel {
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var pollInterval: TimeInterval?
     @ObservationIgnored private var trackEndTask: Task<Void, Never>?
+    /// Track-end refreshes already fired for `trackID`. Capped so a track whose real length exceeds the reported
+    /// duration (podcasts with inserted ads, a stalled stream) cannot turn the one-shot into a 1.5 s poll.
+    @ObservationIgnored private var trackEndRefreshes: (trackID: String, count: Int)?
     @ObservationIgnored private var launchTask: Task<Void, Never>?
     @ObservationIgnored private var retryTask: Task<Void, Never>?
     @ObservationIgnored private var artworkTask: Task<Void, Never>?
@@ -462,15 +467,22 @@ final class MediaModel {
     private func updateTrackEndTask() {
         trackEndTask?.cancel()
         trackEndTask = nil
-        guard isEnabled, isSpotifyRunning, automationPermission == .granted,
+        guard isEnabled, isSpotifyRunning, automationPermission == .granted, let trackID = snapshot?.track?.id,
             let delay = SpotifyRefreshPlan.trackEndRefreshDelay(for: snapshot, at: Date())
         else { return }
+        if let fired = trackEndRefreshes, fired.trackID == trackID, fired.count >= Self.maxTrackEndRefreshesPerTrack {
+            return
+        }
         trackEndTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay), tolerance: .seconds(1))
             guard !Task.isCancelled, let self else { return }
+            let count = self.trackEndRefreshes?.trackID == trackID ? (self.trackEndRefreshes?.count ?? 0) : 0
+            self.trackEndRefreshes = (trackID, count + 1)
             self.requestRefresh()
         }
     }
+
+    private static let maxTrackEndRefreshesPerTrack = 2
 
     // MARK: Artwork
 

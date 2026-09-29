@@ -48,7 +48,7 @@ struct MediaHomeSection: View {
         case .unknown, .notRunning:
             MediaEmptyStateView(
                 symbol: "music.note", title: "Allow Spotify control",
-                detail: "macOS asks once. Nothing leaves your Mac.", buttonTitle: "Allow Access",
+                detail: "macOS asks once. No Spotify login needed.", buttonTitle: "Allow Access",
                 action: { media.requestAutomationPermission() })
         case .granted:
             MediaEmptyStateView(

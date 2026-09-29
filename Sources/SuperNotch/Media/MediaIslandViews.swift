@@ -15,19 +15,23 @@ struct MediaIslandArtwork: View {
 }
 
 /// Right wing: four fake animated bars (no audio capture, no permission). At most 18 x 14 pt.
-/// Animates ONLY while Spotify plays and the notch is on screen: the `TimelineView` is paused otherwise, so a
-/// paused song or a fullscreen app costs zero frames. 20 fps is plenty for four 3 pt bars.
+/// Animates ONLY while Spotify plays and the panel is on screen: the `TimelineView` is paused otherwise, so a
+/// paused song, a hidden panel or a fullscreen app costs zero frames. 20 fps is plenty for four 3 pt bars.
+/// (It only exists in the closed island: `NotchSlots` removes it while the notch is open.)
 struct MediaIslandVisualizer: View {
     @Environment(MediaModel.self) private var media
     @Environment(NotchViewModel.self) private var notch
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init() {}
 
     private var isAnimating: Bool {
-        media.isPlaying && !notch.isFullscreenActive && notch.geometry != nil
+        media.isPlaying && !reduceMotion && notch.isPanelVisible && !notch.isFullscreenActive
+            && notch.geometry != nil
     }
 
     var body: some View {
+        let barColor = DesignTokens.Colors.primaryText.opacity(0.9)
         TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: !isAnimating)) { context in
             let levels =
                 isAnimating
@@ -45,7 +49,7 @@ struct MediaIslandVisualizer: View {
                         height: height)
                     graphics.fill(
                         Path(roundedRect: rect, cornerRadius: barWidth / 2),
-                        with: .color(DesignTokens.Colors.primaryText.opacity(0.9)))
+                        with: .color(barColor))
                 }
             }
         }

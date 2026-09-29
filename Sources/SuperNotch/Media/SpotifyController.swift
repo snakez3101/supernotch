@@ -21,6 +21,8 @@ enum SpotifyStatusResult {
 final class SpotifyController {
     private let runner = SpotifyScriptRunner()
     private var observer: SpotifyEventObserver?
+    /// True after the full status script failed and the core-terms script worked (reset when Spotify quits).
+    private var usesCoreStatusScript = false
 
     /// Called on the MainActor for every Spotify / system event.
     var onEvent: ((SpotifyControllerEvent) -> Void)?
@@ -46,12 +48,33 @@ final class SpotifyController {
 
     // MARK: State
 
-    /// Reads state, track, artwork URL, duration and position in one Apple Event round trip. The snapshot's
-    /// timestamp is the midpoint of the round trip: Spotify sampled its position somewhere inside it.
+    /// Reads state, track, artwork URL, duration and position in one script run. The snapshot's timestamp is
+    /// the midpoint of the round trip: Spotify sampled its position somewhere inside it.
+    ///
+    /// If the full script fails for a reason other than permission / not running / timeout (typically a term
+    /// missing from this Spotify build's dictionary, which is a compile error no `try` inside the script can
+    /// catch), the core-terms script is tried and, when it works, used until Spotify quits.
     func fetchStatus() async -> SpotifyStatusResult {
-        guard SpotifyApp.isRunning else { return .notRunning }
+        guard SpotifyApp.isRunning else {
+            usesCoreStatusScript = false  // a relaunched (maybe updated) Spotify gets the full script again
+            return .notRunning
+        }
+        if !usesCoreStatusScript {
+            let result = await fetchStatus(source: SpotifyScriptParser.statusScript)
+            guard case .failure(.other) = result else { return result }
+            let fallback = await fetchStatus(source: SpotifyScriptParser.coreStatusScript)
+            if case .snapshot = fallback {
+                usesCoreStatusScript = true
+                Log.media.error("Full Spotify status script failed; using the core-terms script until Spotify quits")
+            }
+            return fallback
+        }
+        return await fetchStatus(source: SpotifyScriptParser.coreStatusScript)
+    }
+
+    private func fetchStatus(source: String) async -> SpotifyStatusResult {
         let started = Date()
-        let outcome = await runner.run(source: SpotifyScriptParser.statusScript)
+        let outcome = await runner.run(source: source)
         let finished = Date()
         switch outcome {
         case .output(let text):

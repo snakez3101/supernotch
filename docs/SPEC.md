@@ -121,10 +121,11 @@ Animations:
 * **Drag into the notch:** while a file drag is near the notch, the expanded notch switches to the Shelf
   tab and shows two drop zones side by side: "Shelf" and "AirDrop" (`DropZonesView`). Dropping on AirDrop
   opens the AirDrop picker straight away. **Owner: shelf-clipboard.** Its drag detector (global
-  `leftMouseDragged` monitor + `NSPasteboard(name: .drag)`) sets `ShelfModel.isDragActive`, calls
-  `notch.open(tab: .shelf)` and holds a `NotchHoldToken` while the drag is near the notch. notch-shell only
-  guarantees that the panel accepts the drop (mouse events enabled) over the expanded shape while
-  `isDragActive` is true.
+  `leftMouseDragged` monitor + `NSPasteboard(name: .drag)`, file drags only) sets `ShelfModel.isDragActive`
+  and calls `notch.setFileDragActive(_:)` (§D.4). That call opens the Shelf tab and holds a `NotchHoldToken`
+  while the drag is near the notch. notch-shell also guarantees that the panel accepts the drop (mouse events
+  enabled) over the expanded shape while it is set. Both callers (`ShelfModel` and the container view) are
+  idempotent.
 * **Gear:** opens the Settings window.
 
 ### A.6 Auto-popups (peeks)
@@ -133,20 +134,22 @@ Claude-app asks for them and notch-shell decides and presents them, using the pu
 
 | Event | Popup | Rules |
 |---|---|---|
-| 🔴 needs input (permission) | permission card (peek, `.critical`) | Always shown, **even in fullscreen**. Subtle red glow or pulse. Stays until answered, withdrawn or 290 s. Several pending → queue, oldest first, with "1 of 3" |
-| 🔴 needs input (question/elicitation) | session peek (`.critical`) | Always shown, even in fullscreen. Clicking jumps to the chat. Stays until the session changes state or the user hovers and leaves |
+| 🔴 needs input (permission) | permission card (peek, `.critical`) | Always shown, **even in fullscreen**. Subtle red glow or pulse. Stays until answered, withdrawn or 290 s; it never closes on hover-leave or an outside click. Several pending → queue, oldest first, with "1 of 3" (`NotchViewModel.popupPosition(of:)`). A subagent's request is a card on its parent session (§A.7) |
+| 🔴 needs input (question/elicitation, `AskUserQuestion`) | session peek (`.critical`) | Always shown, even in fullscreen. Clicking jumps to the chat. Never an Allow/Deny card: the question dialog itself is the prompt. Stays until the session changes state or the user hovers and leaves |
 | 🟢 done | session peek (`.info`) with the start of the last assistant message | Only if the host app is **not** frontmost and not in fullscreen. Auto-collapses after `doneAutoCollapse` (4 s), or when the mouse leaves after hovering |
 | Song change | none | – |
 
 Other rules:
 * A peek never interrupts an expanded notch. While expanded, requests are queued and the Claude rows pulse.
+  Clicking a 🔴 row whose card is waiting brings it forward (`NotchViewModel.showQueuedPopup(id:)`).
 * Duplicate requests with the same `id` replace each other.
 * Debounce: a 🟢 that turns back into 🟡 within 0.8 s never pops up.
 
 ### A.7 Permission card
 
 * **Layout:** tool name and one-line summary (monospaced for Bash), an optional detail line, then the
-  session title and project name.
+  session title and project name. A request from a subagent sits on its parent session's card and is
+  labelled with the agent type (`request.agentType`, e.g. "Explore").
 * **Buttons:** **Allow · Always allow · Deny**.
   * Always allow is shown only when `request.canAlwaysAllow`.
   * Always allow sends `request.alwaysAllowDecision`.
@@ -157,7 +160,8 @@ Other rules:
   * Return also needs the confirm step.
 * **Keyboard:** Return = Allow and Esc = Deny, only while the panel is key (§A.4).
 * **Answered elsewhere:** if the request is answered in the terminal or times out, the card disappears
-  (`permissionConnectionClosed`).
+  (`permissionConnectionClosed`, or the store resolves it; §E.1). A card can never outlive its turn: a new
+  prompt, the end of the turn, an interrupt or `idle_prompt` clears every card of the session.
 
 ### A.8 Fullscreen
 
@@ -333,9 +337,12 @@ boundaries and what it means.
 
 ### D.1 Core: Claude models (`SuperNotchCore/Claude`, claude-core)
 
-* `Session`: id, cwd, transcriptPath, pid, pidStartTime, claudeExecutablePath, host (`SessionHost`), phase
-  (`SessionPhase`), lastError, title (`SessionTitle?`), titleCandidates, firstPrompt, lastAssistantPreview,
-  activeSubagents, pendingPermissionIDs, visibility, isStale, startedAt, updatedAt, phaseChangedAt.
+* `Session` (`Codable`, so the app can persist rows across restarts): id, cwd, transcriptPath, pid,
+  pidStartTime, claudeExecutablePath, host (`SessionHost`), phase (`SessionPhase`), lastError, title
+  (`SessionTitle?`), titleCandidates, firstPrompt, lastAssistantPreview, activeSubagents,
+  pendingPermissionIDs, visibility (`SessionVisibility`: `visible | hiddenInternal | hiddenHeadless |
+  hiddenUntilFirstPrompt`), isStale, startedAt, updatedAt, phaseChangedAt, hasBackgroundWork (the last Stop
+  listed in-flight background tasks; the app may skip the 🟢 popup).
   * Computed: `trafficLight`, `isVisible`, `hasError`, `projectName`, `displayTitle`.
 * `SessionPhase`: `.idle | .working | .done | .needsInput(NeedsInputKind)`.
   * `NeedsInputKind`: `.permission | .question | .other`.
@@ -343,13 +350,15 @@ boundaries and what it means.
 * `SessionHost`, `SessionHostKind` (`terminal`, `claudeDesktop`, `vscode`, `unknown`): used by the focuser
   and by focus-aware popups (`appBundleID`).
 * `PermissionRequest`: id (= envelope id), sessionID, toolName, toolInput, summary, detail, danger
-  (`DangerAssessment`), suggestions, receivedAt.
-  * Computed: `canAlwaysAllow`, `alwaysAllowDecision`.
+  (`DangerAssessment`), suggestions, receivedAt, agentID and agentType (set when a subagent asked).
+  * Computed: `canAlwaysAllow`, `alwaysAllowDecision`, `isFromSubagent`.
 * `PermissionDecision`: `.allow | .allowAlways(updatedPermissions:) | .deny(message:)`.
   * `hookStdout` is exactly what the hook prints.
 * `UsageLimits` / `UsageWindow`: `fiveHour`, `sevenDay`, `usedPercentage` 0…100, `fraction` 0…1,
   `resetsAt`, `isWarning(threshold:)`.
 * `SessionEvent`, `SessionEffect`, `TranscriptSignals`, `AgentsListEntry`.
+  * `SessionEvent.sessionEnded(sessionID:now:)` is the app's synthetic SessionEnd (e.g. Claude Desktop quit).
+    It always removes the row, never parks it.
 * `SessionSource` (`@MainActor` protocol: `sourceID`, `start(sink:)`, `stop()`). This is the seam for a
   future cloud source.
 * `SessionStore` (the reducer):
@@ -364,10 +373,21 @@ boundaries and what it means.
       public var visibleSessions: [Session]            // sorted: red, yellow, green, grey; then phaseChangedAt desc
       public var pendingPermissions: [PermissionRequest]  // oldest first, visible sessions only
       public var aggregateLight: TrafficLight?         // nil when no visible session
+      // Additive (app launch):
+      public mutating func restoreUsage(_ restored: UsageLimits?, now: Date = Date())
+      public mutating func restoreSessions(_ restored: [Session], now: Date) -> [SessionEffect]
+      public func isParked(_ sessionID: String) -> Bool  // Desktop row kept after its process ended (§E.1)
   }
   ```
 
-* `TitleResolver`, `DangerousCommandClassifier`, `TranscriptTailParser`, `ClaudePaths`, `ClaudeVersion`.
+  `SessionStoreConfiguration` holds the tunables (`staleAfter` 600 s, `agentsIdleGrace` 10 s,
+  `desktopParkedLifetime` 1800 s, `titleGenerationGrace` 30 s, `tombstoneLifetime`, `hiddenSessionLifetime`,
+  `adoptAgentsSessions`, `compressLongNativeTitles`, `interruptRaceWindow`). The header comment of
+  `SessionStore.swift` and the tests in `Tests/SuperNotchCoreTests/Claude` are the source of truth for §E.
+
+* `TitleResolver`, `DangerousCommandClassifier`, `TranscriptTailParser`, `ClaudePaths`, `ClaudeVersion`,
+  `ClaudeProcess` (pure argv/path classification: is this a Claude Code process, `-p`, how to re-run it, which
+  GUI app hosts it; the app also uses it to drop headless pids before adopting them from `claude agents`).
 * `HookSettingsMerger` + `HookInstallSpec` + `HookManifest` + `ShellQuote` (installer logic, §D.6).
 
 ### D.2 Core: notch contract (`SuperNotchCore/Notch`, FOUNDATION + notch-shell)
@@ -454,6 +474,18 @@ func toggle()
 func present(_ request: PopupRequest)            // runs PopupPolicy; show / queue / suppress
 func withdraw(popupID: String)                   // remove a shown or queued popup
 func holdOpen(reason: String) -> NotchHoldToken  // token.release(); also released on deinit
+// Additive members (all real, used across streams):
+var currentPopup: PopupRequest? { get }          // the peek on screen, if any
+var isOpen: Bool { get }                         // presentation is not .closed
+var isFileDragActive: Bool { get }
+func selectTab(_ tab: NotchTab)
+func setFileDragActive(_ active: Bool)           // shelf-clipboard calls it; idempotent. true: hold the notch open,
+                                                 // select + expand the Shelf tab (needs shelfEnabled + a notch)
+func popupPosition(of id: String) -> NotchPopupPosition?  // 1-based (index, total) among popups of the same
+                                                 // kind, shown + queued: the "1 of 3" of the permission card
+@discardableResult
+func showQueuedPopup(id: String) -> Bool         // bring a waiting popup forward even while expanded (collapses
+                                                 // the notch); false if it is not pending or policy suppresses it
 // NotchHoldToken (notch-shell, Notch/NotchHoldToken.swift): `final class` (nonisolated, Sendable);
 // `release()` is idempotent and non-mutating, so `let token` properties work; dropping the token releases it.
 func openSettings()                              // shows the Settings window (calls the handler below)
@@ -472,7 +504,10 @@ var hookStatus: ClaudeHookStatus { get }         // .unknown, .notInstalled, .in
 func session(id: String) -> Session?
 func permission(id: String) -> PermissionRequest?
 func answer(requestID: String, decision: PermissionDecision)
+func answerInChat(requestID: String)             // release the held hook (Claude Code shows its own prompt) + focus
 func focus(sessionID: String)                    // jump to chat (§D.8)
+// Additive, for Settings/onboarding: installHooks(), uninstallHooks(), refreshHookStatus(), hookPreview,
+// hookMessage, lastBackupPath, configDirectory, claudeVersionText, isClaudeCLIFound, socketError.
 ```
 
 **`MediaModel`** (media):
@@ -487,6 +522,8 @@ func playPause(); func nextTrack(); func previousTrack()
 func seek(to seconds: Double)
 func requestAutomationPermission()
 func openSpotify()
+// Additive: isEnabled (settings.spotifyEnabled), canControl (running && permission .granted),
+// accent: MediaAccentColor? (cover colour), recheckAutomationPermission(), openAutomationSettings().
 ```
 
 **`ShelfModel`** (shelf-clipboard):
@@ -498,6 +535,8 @@ func addText(_ text: String)
 func remove(id: UUID); func togglePin(id: UUID); func removeAll()
 func fileURL(for item: ShelfItem) -> URL?
 func airDrop(itemIDs: [UUID])
+// Additive: isEnabled, showsAirDropZone, shelfFolderURL, openShelfFolder(), selection / QuickLook / context-menu
+// helpers used by ShelfTabView. A drag flips isDragActive, which calls NotchViewModel.setFileDragActive(_:).
 ```
 
 **`ClipboardModel`** (shelf-clipboard):
@@ -511,6 +550,8 @@ func copy(_ entryID: UUID)
 func delete(_ entryID: UUID); func togglePin(_ entryID: UUID); func clearAll()
 func requestPastePermission()
 func imageURL(for entry: ClipboardEntry) -> URL?
+// Additive: isEnabled, searchQuery / filteredEntries (history panel), pasteboardAccess (macOS 15.4+ paste
+// privacy), openAccessibilitySettings(), openPrivacySettings().
 ```
 
 ### D.5 View slots (FROZEN type names: each stream provides a `View` with a no-argument initializer unless noted)

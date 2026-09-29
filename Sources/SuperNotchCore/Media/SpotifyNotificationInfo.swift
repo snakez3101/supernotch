@@ -40,7 +40,9 @@ public struct SpotifyNotificationInfo: Sendable, Equatable {
         }
         self.init()
         state = Self.string(values["playerstate"]).flatMap(Self.playbackState)
-        trackID = Self.string(values["trackid"]).flatMap { $0.isEmpty ? nil : $0 }
+        trackID = Self.string(values["trackid"]).map(SpotifyScriptParser.canonicalTrackID).flatMap {
+            $0.isEmpty ? nil : $0
+        }
         title = Self.string(values["name"])
         artist = Self.string(values["artist"])
         album = Self.string(values["album"])

@@ -12,8 +12,10 @@ import Foundation
 // script returns the sentinel `notRunningSentinel` (it never launches Spotify, see below).
 //
 // Hardening notes (all covered by tests):
-//  * every property is read inside its own `try`, so one missing value (`missing value` artwork on ads and
-//    local files, an unset position) cannot throw away the whole snapshot;
+//  * every property is read inside its own `try … on error`, so one missing value (`missing value` artwork on
+//    ads and local files, an unset position) cannot throw away the whole snapshot; `missing value` is empty;
+//  * a bare base62 id or an open.spotify.com URL is normalised to a `spotify:<kind>:<id>` URI;
+//  * a track whose id could not be read but whose name could is still shown (synthetic `spotify:unknown:` id);
 //  * AppleScript prints numbers in the user's locale ("12,5"), so the number parser accepts both separators;
 //  * enum values that lost their terminology come back as raw four-char codes («constant ****kPSP»);
 //  * unknown / extra / missing fields are tolerated, garbage returns nil, nothing here can trap.
@@ -214,11 +216,21 @@ public enum SpotifyScriptParser {
         let volume = clampedVolume(number(fields[4]))
 
         var track: TrackInfo?
-        if fields.count >= fieldCount, !fields[5].isEmpty {
-            let durationMs = max(0, number(fields[9]) ?? 0)
-            track = TrackInfo(
-                id: fields[5], title: fields[6], artist: fields[7], album: fields[8],
-                durationSeconds: durationMs / 1000, artworkURL: artworkURL(fields[10]))
+        if fields.count >= fieldCount {
+            let title = text(fields[6])
+            let artist = text(fields[7])
+            let album = text(fields[8])
+            var id = canonicalTrackID(text(fields[5]))
+            if id.isEmpty, !title.isEmpty {
+                // `id` failed but the track is there: keep showing it with a stable synthetic id.
+                id = "spotify:unknown:" + [title, artist, album].joined(separator: "|")
+            }
+            if !id.isEmpty {
+                let durationMs = max(0, number(fields[9]) ?? 0)
+                track = TrackInfo(
+                    id: id, title: title, artist: artist, album: album,
+                    durationSeconds: durationMs / 1000, artworkURL: artworkURL(fields[10]))
+            }
         }
         let snapshot = PlaybackSnapshot(
             track: track,
@@ -241,6 +253,37 @@ public enum SpotifyScriptParser {
         case "playing": return .playing
         case "paused": return .paused
         default: return .stopped
+        }
+    }
+
+    /// AppleScript prints an unset value as "missing value".
+    static func text(_ raw: String) -> String {
+        raw == "missing value" ? "" : raw
+    }
+
+    /// "spotify:<kind>:<id>" URIs pass through. A bare 22-character base62 id becomes a track URI and an
+    /// "https://open.spotify.com/<kind>/<id>" URL becomes "spotify:<kind>:<id>", so ids from AppleScript and from
+    /// the notification always compare equal. Anything else is returned trimmed and unchanged.
+    public static func canonicalTrackID(_ raw: String) -> String {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.count == 22, value.unicodeScalars.allSatisfy(isBase62) { return "spotify:track:" + value }
+        let prefix = "https://open.spotify.com/"
+        if value.hasPrefix(prefix) {
+            let path = value.dropFirst(prefix.count).split(separator: "?").first ?? ""
+            let parts = path.split(separator: "/")
+            if parts.count == 2, parts[0] == "track" || parts[0] == "episode",
+                parts[1].unicodeScalars.allSatisfy(isBase62)
+            {
+                return "spotify:\(parts[0]):\(parts[1])"
+            }
+        }
+        return value
+    }
+
+    private static func isBase62(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x30...0x39, 0x41...0x5A, 0x61...0x7A: return true
+        default: return false
         }
     }
 

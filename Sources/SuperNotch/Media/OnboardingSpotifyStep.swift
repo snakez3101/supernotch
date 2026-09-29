@@ -19,7 +19,7 @@ struct OnboardingSpotifyStep: View {
                 .font(.title2.weight(.semibold))
             Text(
                 "SuperNotch shows what's playing and lets you pause, skip and seek. It talks to the Spotify desktop "
-                    + "app through macOS Automation: no Spotify login, and nothing leaves your Mac."
+                    + "app through macOS Automation: no Spotify login, only cover images are loaded from Spotify."
             )
             .font(.callout)
             .foregroundStyle(.secondary)

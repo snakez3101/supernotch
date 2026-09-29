@@ -169,13 +169,83 @@ struct SpotifyScriptParserTests {
     }
 
     @Test func statusScriptNeverLaunchesSpotifyAndUsesSeparator() {
-        let script = SpotifyScriptParser.statusScript
-        #expect(script.contains("is not running then return \"NOT_RUNNING\""))
-        #expect(script.contains("ASCII character 31"))
-        #expect(script.contains("with timeout"))
-        #expect(!script.contains("tell application \"Spotify\""))
+        for script in [SpotifyScriptParser.statusScript, SpotifyScriptParser.coreStatusScript] {
+            #expect(script.contains("is not running then return \"NOT_RUNNING\""))
+            #expect(script.contains("with timeout"))
+            #expect(!script.contains("tell application \"Spotify\""))
+            // The separator is built before the `tell`, so no scripting-addition event goes to Spotify.
+            let separatorLine = script.range(of: "set sep to character id 31")
+            let tellLine = script.range(of: "tell application id \"com.spotify.client\"")
+            #expect(separatorLine != nil && tellLine != nil)
+            if let separatorLine, let tellLine { #expect(separatorLine.lowerBound < tellLine.lowerBound) }
+            #expect(!script.contains("ASCII character"))
+            // One `try` per read, each with its own `on error` default.
+            #expect(script.components(separatedBy: "        try\n").count == script.components(separatedBy: "on error").count)
+            #expect(script.components(separatedBy: " & sep & ").count == SpotifyScriptParser.fieldCount)
+        }
         #expect(SpotifyScriptParser.fieldCount == 11)
         #expect(SpotifyScriptParser.separator == "\u{1F}")
+    }
+
+    @Test func coreScriptAvoidsOptionalTerms() {
+        let core = SpotifyScriptParser.coreStatusScript
+        for term in ["artwork url", "shuffling", "repeating", "sound volume"] {
+            #expect(!core.contains(term))
+            #expect(SpotifyScriptParser.statusScript.contains(term))
+        }
+        for term in ["player state", "player position", "current track", "id of trk", "name of trk", "artist of trk",
+            "album of trk", "duration of trk"]
+        {
+            #expect(core.contains(term))
+        }
+    }
+
+    @Test func coreScriptOutputParses() throws {
+        let output = ["playing", "3", "false", "false", "100", "spotify:track:abc", "Song", "Artist", "Album",
+            "200000", ""].joined(separator: sep)
+        let track = try #require(SpotifyScriptParser.parse(output, now: now)?.track)
+        #expect(track.artworkURL == nil)
+        #expect(track.durationSeconds == 200)
+    }
+
+    @Test func canonicalTrackIDs() {
+        #expect(SpotifyScriptParser.canonicalTrackID("spotify:track:4uLU6hMCjMI75M1A2tKUQC") == "spotify:track:4uLU6hMCjMI75M1A2tKUQC")
+        #expect(SpotifyScriptParser.canonicalTrackID(" 4uLU6hMCjMI75M1A2tKUQC ") == "spotify:track:4uLU6hMCjMI75M1A2tKUQC")
+        #expect(
+            SpotifyScriptParser.canonicalTrackID("https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC?si=x")
+                == "spotify:track:4uLU6hMCjMI75M1A2tKUQC")
+        #expect(
+            SpotifyScriptParser.canonicalTrackID("https://open.spotify.com/episode/7makk4oTQel546B0PZlDM5")
+                == "spotify:episode:7makk4oTQel546B0PZlDM5")
+        #expect(SpotifyScriptParser.canonicalTrackID("spotify:ad:0000000000000000") == "spotify:ad:0000000000000000")
+        #expect(SpotifyScriptParser.canonicalTrackID("https://open.spotify.com/album/x/y") == "https://open.spotify.com/album/x/y")
+        #expect(SpotifyScriptParser.canonicalTrackID("") == "")
+    }
+
+    @Test func bareIdAndMissingValues() throws {
+        let bare = ["playing", "1", "false", "false", "50", "4uLU6hMCjMI75M1A2tKUQC", "Song", "missing value", "Album",
+            "1000", "missing value"].joined(separator: sep)
+        let track = try #require(SpotifyScriptParser.parse(bare, now: now)?.track)
+        #expect(track.id == "spotify:track:4uLU6hMCjMI75M1A2tKUQC")
+        #expect(track.artist == "")
+        #expect(track.artworkURL == nil)
+        #expect(track.openURL == "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC")
+
+        let missingID = ["paused", "1", "false", "false", "50", "missing value", "missing value", "", "", "0", ""]
+            .joined(separator: sep)
+        let snapshot = try #require(SpotifyScriptParser.parse(missingID, now: now))
+        #expect(snapshot.track == nil)
+        #expect(snapshot.state == .stopped)
+    }
+
+    @Test func unreadableIdStillShowsTheTrack() throws {
+        let output = ["playing", "1", "false", "false", "50", "", "Song", "Artist", "Album", "1000", ""]
+            .joined(separator: sep)
+        let track = try #require(SpotifyScriptParser.parse(output, now: now)?.track)
+        #expect(track.id == "spotify:unknown:Song|Artist|Album")
+        #expect(track.title == "Song")
+        #expect(!track.isAd && !track.isLocal && !track.isEpisode)
+        #expect(track.openURL == nil)
     }
 
     @Test func timeFormatting() {

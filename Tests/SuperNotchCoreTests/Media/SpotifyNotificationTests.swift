@@ -27,6 +27,11 @@ struct SpotifyNotificationTests {
         #expect(info.durationSeconds == 1)
     }
 
+    @Test func bareTrackIDIsCanonicalised() throws {
+        let info = try #require(SpotifyNotificationInfo(userInfo: ["Track ID": "4uLU6hMCjMI75M1A2tKUQC"]))
+        #expect(info.trackID == "spotify:track:4uLU6hMCjMI75M1A2tKUQC")
+    }
+
     @Test func stoppedOnlyNotification() throws {
         let info = try #require(SpotifyNotificationInfo(userInfo: try MediaFixtures.userInfo("notification-stopped")))
         #expect(info.state == .stopped)
