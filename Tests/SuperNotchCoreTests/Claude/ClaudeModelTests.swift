@@ -10,7 +10,8 @@ struct UsageLimitsTests {
 
     @Test func parsesTheDocumentedStatusLinePayload() throws {
         let limits = try #require(UsageLimits.fromStatusLine(try ClaudeFixtures.json("statusline"), now: now))
-        #expect(limits.fiveHour == UsageWindow(usedPercentage: 82.5, resetsAt: Date(timeIntervalSince1970: 1_790_003_600)))
+        #expect(
+            limits.fiveHour == UsageWindow(usedPercentage: 82.5, resetsAt: Date(timeIntervalSince1970: 1_790_003_600)))
         #expect(limits.sevenDay?.usedPercentage == 12)
         #expect(limits.fiveHour?.fraction == 0.825)
         #expect(limits.isWarning(threshold: 0.8))
@@ -41,14 +42,20 @@ struct UsageLimitsTests {
         let reset = Date(timeIntervalSince1970: 1_790_003_600)
         let current = UsageWindow(usedPercentage: 60, resetsAt: reset)
         #expect(current.merged(with: UsageWindow(usedPercentage: 40, resetsAt: reset)).usedPercentage == 60)
-        #expect(current.merged(with: UsageWindow(usedPercentage: 70, resetsAt: reset.addingTimeInterval(30))).usedPercentage == 70)
+        #expect(
+            current.merged(with: UsageWindow(usedPercentage: 70, resetsAt: reset.addingTimeInterval(30))).usedPercentage
+                == 70)
         let newWindow = UsageWindow(usedPercentage: 1, resetsAt: reset.addingTimeInterval(18_000))
         #expect(current.merged(with: newWindow) == newWindow)
         let stale = UsageWindow(usedPercentage: 99, resetsAt: reset.addingTimeInterval(-18_000))
         #expect(current.merged(with: stale) == current)
 
-        let limits = UsageLimits(fiveHour: current, sevenDay: UsageWindow(usedPercentage: 10, resetsAt: nil), updatedAt: now)
-        let merged = limits.merged(with: UsageLimits(fiveHour: nil, sevenDay: UsageWindow(usedPercentage: 11, resetsAt: nil), updatedAt: now.addingTimeInterval(5)))
+        let limits = UsageLimits(
+            fiveHour: current, sevenDay: UsageWindow(usedPercentage: 10, resetsAt: nil), updatedAt: now)
+        let merged = limits.merged(
+            with: UsageLimits(
+                fiveHour: nil, sevenDay: UsageWindow(usedPercentage: 11, resetsAt: nil),
+                updatedAt: now.addingTimeInterval(5)))
         #expect(merged.fiveHour == current)
         #expect(merged.sevenDay?.usedPercentage == 11)
         #expect(merged.updatedAt == now.addingTimeInterval(5))
@@ -56,7 +63,8 @@ struct UsageLimitsTests {
 
     @Test func pruning() {
         let limits = UsageLimits(
-            fiveHour: UsageWindow(usedPercentage: 50, resetsAt: now), sevenDay: UsageWindow(usedPercentage: 5, resetsAt: nil),
+            fiveHour: UsageWindow(usedPercentage: 50, resetsAt: now),
+            sevenDay: UsageWindow(usedPercentage: 5, resetsAt: nil),
             updatedAt: now)
         let pruned = limits.pruned(now: now)
         #expect(pruned.fiveHour == nil)
@@ -66,7 +74,8 @@ struct UsageLimitsTests {
     }
 
     @Test func codableForPersistence() throws {
-        let limits = UsageLimits(fiveHour: UsageWindow(usedPercentage: 1.5, resetsAt: now), sevenDay: nil, updatedAt: now)
+        let limits = UsageLimits(
+            fiveHour: UsageWindow(usedPercentage: 1.5, resetsAt: now), sevenDay: nil, updatedAt: now)
         let decoded = try JSONDecoder().decode(UsageLimits.self, from: try JSONEncoder().encode(limits))
         #expect(decoded == limits)
     }
@@ -110,10 +119,13 @@ struct AgentsListEntryTests {
 @Suite("Session host and visibility")
 struct SessionHostTests {
     @Test func hostDetection() {
-        let iterm = SessionHost(context: HookContext(tty: "/dev/ttys001", termProgram: "iTerm.app", bundleIdentifier: "com.apple.Terminal"))
+        let iterm = SessionHost(
+            context: HookContext(tty: "/dev/ttys001", termProgram: "iTerm.app", bundleIdentifier: "com.apple.Terminal"))
         #expect(iterm.kind == .terminal)
         #expect(iterm.appBundleID == "com.googlecode.iterm2")  // TERM_PROGRAM beats a leaked bundle id
-        let tmux = SessionHost(context: HookContext(termProgram: "tmux", tmux: "/tmp/tmux-501/default,1,0", bundleIdentifier: "com.mitchellh.ghostty"))
+        let tmux = SessionHost(
+            context: HookContext(
+                termProgram: "tmux", tmux: "/tmp/tmux-501/default,1,0", bundleIdentifier: "com.mitchellh.ghostty"))
         #expect(tmux.kind == .terminal)
         #expect(tmux.appBundleID == "com.mitchellh.ghostty")
         let desktop = SessionHost(context: HookContext(entrypoint: "claude-desktop", hostSessionID: "local_1"))
@@ -121,10 +133,12 @@ struct SessionHostTests {
         #expect(desktop.appBundleID == SessionHost.claudeDesktopBundleID)
         #expect(desktop.desktopSessionID == "local_1")
         #expect(SessionHost(context: HookContext(entrypoint: "claude-desktop-3p")).kind == .claudeDesktop)
-        let cursor = SessionHost(context: HookContext(termProgram: "vscode", bundleIdentifier: "com.todesktop.230313mzl4w4u92"))
+        let cursor = SessionHost(
+            context: HookContext(termProgram: "vscode", bundleIdentifier: "com.todesktop.230313mzl4w4u92"))
         #expect(cursor.kind == .vscode)
         #expect(cursor.appBundleID == "com.todesktop.230313mzl4w4u92")
-        #expect(SessionHost(context: HookContext(entrypoint: "claude-vscode")).appBundleID == SessionHost.vscodeBundleID)
+        #expect(
+            SessionHost(context: HookContext(entrypoint: "claude-vscode")).appBundleID == SessionHost.vscodeBundleID)
         #expect(SessionHost(context: HookContext()).kind == .unknown)
         #expect(SessionHost.bundleID(forTermProgram: "Apple_Terminal") == "com.apple.Terminal")
         #expect(SessionHost.bundleID(forTermProgram: "vscode") == nil)
@@ -139,11 +153,18 @@ struct SessionHostTests {
         #expect(HookContext(entrypoint: "sdk-ts").isHeadless)
         #expect(HookContext(entrypoint: "sdk-py").isHeadless)
         #expect(HookContext(bundleIdentifier: SessionHost.claudeDesktopBundleID, entrypoint: "local-agent").isHeadless)
-        #expect(!HookContext(bundleIdentifier: SessionHost.claudeDesktopBundleID, entrypoint: "local-agent").isDesktopHost)
+        #expect(
+            !HookContext(bundleIdentifier: SessionHost.claudeDesktopBundleID, entrypoint: "local-agent").isDesktopHost)
         #expect(!HookContext(entrypoint: "cli").isHeadless)
-        #expect(SessionStore.visibility(for: HookContext(isInternal: true), event: .userPromptSubmit) == .hiddenInternal)
-        #expect(SessionStore.visibility(for: HookContext(entrypoint: "claude-desktop", isPrintMode: true), event: .sessionStart) == .hiddenUntilFirstPrompt)
-        #expect(SessionStore.visibility(for: HookContext(entrypoint: "claude-desktop", isPrintMode: true), event: .stop) == .visible)
+        #expect(
+            SessionStore.visibility(for: HookContext(isInternal: true), event: .userPromptSubmit) == .hiddenInternal)
+        #expect(
+            SessionStore.visibility(
+                for: HookContext(entrypoint: "claude-desktop", isPrintMode: true), event: .sessionStart)
+                == .hiddenUntilFirstPrompt)
+        #expect(
+            SessionStore.visibility(for: HookContext(entrypoint: "claude-desktop", isPrintMode: true), event: .stop)
+                == .visible)
     }
 
     @Test func awaitingReplies() {
@@ -153,7 +174,9 @@ struct SessionHostTests {
         #expect(!terminal.shouldAwaitPermissionReply(for: .preToolUse, agentID: nil))
         #expect(!HookContext(isPrintMode: true).shouldAwaitPermissionReply(for: .permissionRequest, agentID: nil))
         #expect(!HookContext(isInternal: true).shouldAwaitPermissionReply(for: .permissionRequest, agentID: nil))
-        #expect(HookContext(entrypoint: "claude-desktop", isPrintMode: true).shouldAwaitPermissionReply(for: .permissionRequest, agentID: nil))
+        #expect(
+            HookContext(entrypoint: "claude-desktop", isPrintMode: true).shouldAwaitPermissionReply(
+                for: .permissionRequest, agentID: nil))
     }
 
     @Test func projectNameAndDisplayTitle() {
@@ -171,15 +194,23 @@ struct SessionHostTests {
 @Suite("ClaudeProcess")
 struct ClaudeProcessTests {
     @Test func recognisesInstalls() {
-        #expect(ClaudeProcess.isClaude(arguments: ["claude", "--resume"], executablePath: "/Users/me/.local/share/claude/versions/2.1.284"))
+        #expect(
+            ClaudeProcess.isClaude(
+                arguments: ["claude", "--resume"], executablePath: "/Users/me/.local/share/claude/versions/2.1.284"))
         #expect(ClaudeProcess.isClaude(arguments: ["/opt/homebrew/bin/claude"], executablePath: nil))
-        #expect(ClaudeProcess.isClaude(arguments: ["2.1.284"], executablePath: "/Users/me/.local/share/claude/versions/2.1.284"))
+        #expect(
+            ClaudeProcess.isClaude(
+                arguments: ["2.1.284"], executablePath: "/Users/me/.local/share/claude/versions/2.1.284"))
         #expect(
             ClaudeProcess.isClaude(
                 arguments: ["node", "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js", "-p", "hi"],
                 executablePath: "/usr/local/bin/node"))
-        #expect(ClaudeProcess.isClaude(arguments: ["node", "/usr/local/bin/claude"], executablePath: "/usr/local/bin/node"))
-        #expect(!ClaudeProcess.isClaude(arguments: ["/Applications/Claude.app/Contents/MacOS/Claude"], executablePath: "/Applications/Claude.app/Contents/MacOS/Claude"))
+        #expect(
+            ClaudeProcess.isClaude(arguments: ["node", "/usr/local/bin/claude"], executablePath: "/usr/local/bin/node"))
+        #expect(
+            !ClaudeProcess.isClaude(
+                arguments: ["/Applications/Claude.app/Contents/MacOS/Claude"],
+                executablePath: "/Applications/Claude.app/Contents/MacOS/Claude"))
         #expect(!ClaudeProcess.isClaude(arguments: ["node", "server.js"], executablePath: "/usr/local/bin/node"))
         #expect(!ClaudeProcess.isClaude(arguments: ["/bin/zsh", "-c", "claude"], executablePath: "/bin/zsh"))
         #expect(!ClaudeProcess.isClaude(arguments: [], executablePath: nil))
@@ -191,11 +222,13 @@ struct ClaudeProcessTests {
         #expect(!ClaudeProcess.isPrintMode(arguments: ["claude", "fix -p flag handling"]))
         #expect(!ClaudeProcess.isPrintMode(arguments: ["-p"]))
         #expect(
-            ClaudeProcess.invocation(arguments: ["claude"], executablePath: "/Users/me/.local/share/claude/versions/2.1.284")
+            ClaudeProcess.invocation(
+                arguments: ["claude"], executablePath: "/Users/me/.local/share/claude/versions/2.1.284")
                 == ["/Users/me/.local/share/claude/versions/2.1.284"])
         #expect(
             ClaudeProcess.invocation(
-                arguments: ["node", "/opt/lib/node_modules/@anthropic-ai/claude-code/cli.js"], executablePath: "/opt/bin/node")
+                arguments: ["node", "/opt/lib/node_modules/@anthropic-ai/claude-code/cli.js"],
+                executablePath: "/opt/bin/node")
                 == ["/opt/bin/node", "/opt/lib/node_modules/@anthropic-ai/claude-code/cli.js"])
         #expect(ClaudeProcess.invocation(arguments: ["claude"], executablePath: nil) == nil)
     }
@@ -211,13 +244,19 @@ struct ClaudeProcessTests {
         ]
         #expect(ClaudeProcess.hostAppPath(chain: chain, claudePID: 11) == "/Applications/iTerm.app")
         let desktop = [
-            HookProcessEntry(pid: 20, name: "claude", path: "/Users/me/Library/Application Support/Claude/claude-code/2.1.284/claude.app/Contents/MacOS/claude"),
+            HookProcessEntry(
+                pid: 20, name: "claude",
+                path:
+                    "/Users/me/Library/Application Support/Claude/claude-code/2.1.284/claude.app/Contents/MacOS/claude"),
             HookProcessEntry(pid: 21, name: "disclaimer", path: "/Applications/Claude.app/Contents/Helpers/disclaimer"),
             HookProcessEntry(pid: 22, name: "Claude", path: "/Applications/Claude.app/Contents/MacOS/Claude"),
         ]
         #expect(ClaudeProcess.hostAppPath(chain: desktop, claudePID: 20) == "/Applications/Claude.app")
         #expect(ClaudeProcess.hostAppPath(chain: [], claudePID: nil) == nil)
-        #expect(HookContext.appBundlePath(in: "/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/x") == "/Applications/Visual Studio Code.app")
+        #expect(
+            HookContext.appBundlePath(
+                in: "/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/x"
+            ) == "/Applications/Visual Studio Code.app")
         #expect(ClaudeProcess.ttyPath(linuxTTYNumber: 34_816) == "/dev/pts/0")
         #expect(ClaudeProcess.ttyPath(linuxTTYNumber: 34_817) == "/dev/pts/1")
         #expect(ClaudeProcess.ttyPath(linuxTTYNumber: 0) == nil)
@@ -228,7 +267,8 @@ struct ClaudeProcessTests {
             environment: [
                 "TERM_PROGRAM": "iTerm.app", "ITERM_SESSION_ID": "w0t1p0:ABC", "CLAUDE_CODE_ENTRYPOINT": "cli",
                 "SUPERNOTCH_INTERNAL": "1", "CLAUDE_CODE_REMOTE": "", "CLAUDE_CODE_EXECPATH": "/opt/claude/bin/claude",
-                "CLAUDE_PID": "4242", "VSCODE_GIT_ASKPASS_NODE": "/Applications/Cursor.app/Contents/Frameworks/Cursor Helper (Plugin).app/x",
+                "CLAUDE_PID": "4242",
+                "VSCODE_GIT_ASKPASS_NODE": "/Applications/Cursor.app/Contents/Frameworks/Cursor Helper (Plugin).app/x",
             ], hookVersion: "9")
         #expect(context.termProgram == "iTerm.app")
         #expect(context.isInternal)

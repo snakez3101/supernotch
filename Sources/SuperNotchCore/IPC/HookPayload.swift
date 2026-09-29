@@ -82,10 +82,9 @@ public enum NotificationType {
     public static let agentCompleted = "agent_completed"
     public static let quotaAutoResumeFired = "quota_auto_resume_fired"
 
-    /// Types that mean "the session needs the user".
-    public static let needsInput: Set<String> = [
-        permissionPrompt, elicitationDialog, elicitationURLDialog, agentNeedsInput,
-    ]
+    /// Types that mean "the session needs the user". `agent_needs_input` is not one of them: it fires in the
+    /// agent-view process about a *different* (background) session, which reports itself through its own hooks.
+    public static let needsInput: Set<String> = [permissionPrompt, elicitationDialog, elicitationURLDialog]
 
     /// Types that mean "a question/elicitation was answered and Claude continues".
     public static let resumesWork: Set<String> = [elicitationComplete, elicitationResponse, quotaAutoResumeFired]
@@ -95,7 +94,6 @@ public enum NotificationType {
         switch type {
         case permissionPrompt: return .permission
         case elicitationDialog, elicitationURLDialog: return .question
-        case agentNeedsInput: return .other
         default: return nil
         }
     }

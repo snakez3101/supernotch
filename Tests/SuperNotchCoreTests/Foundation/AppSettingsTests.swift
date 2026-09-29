@@ -127,7 +127,15 @@ struct KeyComboTests {
 
     @Test func validity() {
         #expect(KeyCombo.toggleNotchDefault.isValidGlobalHotkey)
+        #expect(KeyCombo.clipboardHistoryDefault.isValidGlobalHotkey)
+        #expect(KeyCombo(keyCode: 45, carbonModifiers: KeyCombo.cmdKey).isValidGlobalHotkey)
+        #expect(KeyCombo(keyCode: 45, carbonModifiers: KeyCombo.controlKey).isValidGlobalHotkey)
+        #expect(KeyCombo(keyCode: 45, carbonModifiers: KeyCombo.controlKey | KeyCombo.optionKey).isValidGlobalHotkey)
+        #expect(!KeyCombo(keyCode: 9, carbonModifiers: 0).isValidGlobalHotkey)
         #expect(!KeyCombo(keyCode: 9, carbonModifiers: KeyCombo.shiftKey).isValidGlobalHotkey)
+        // macOS 15+ refuses ⌥-only and ⌥⇧ global hotkeys.
+        #expect(!KeyCombo(keyCode: 9, carbonModifiers: KeyCombo.optionKey).isValidGlobalHotkey)
+        #expect(!KeyCombo(keyCode: 9, carbonModifiers: KeyCombo.optionKey | KeyCombo.shiftKey).isValidGlobalHotkey)
     }
 
     @Test func defaultsUseOptionCommand() {

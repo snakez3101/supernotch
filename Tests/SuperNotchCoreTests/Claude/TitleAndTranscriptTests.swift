@@ -9,7 +9,9 @@ struct TitleResolverTests {
     @Test func order() {
         var candidates = TitleCandidates(
             customTitle: "custom", aiTitle: "ai", sessionTitle: "session", agentsName: "agents", generated: "generated")
-        func resolved() -> SessionTitle { TitleResolver.resolve(candidates, firstPrompt: "prompt text", projectName: "proj") }
+        func resolved() -> SessionTitle {
+            TitleResolver.resolve(candidates, firstPrompt: "prompt text", projectName: "proj")
+        }
         #expect(resolved() == SessionTitle(text: "custom", source: .customTitle))
         candidates.customTitle = "  "
         #expect(resolved() == SessionTitle(text: "ai", source: .aiTitle))
@@ -28,33 +30,42 @@ struct TitleResolverTests {
 
     @Test func longNativeTitlesAreShortenedOrReplacedByGenerated() {
         var candidates = TitleCandidates(aiTitle: "Investigate why the nightly integration tests are flaky")
-        #expect(TitleResolver.resolve(candidates, firstPrompt: nil, projectName: "p").text == "Investigate why the nightly…")
+        #expect(
+            TitleResolver.resolve(candidates, firstPrompt: nil, projectName: "p").text == "Investigate why the nightly…"
+        )
         #expect(!TitleResolver.needsGeneration(candidates, firstPrompt: "x"))
         #expect(TitleResolver.needsCompression(candidates))
         candidates.generated = "Flaky nightly tests"
-        #expect(TitleResolver.resolve(candidates, firstPrompt: nil, projectName: "p") == SessionTitle(text: "Flaky nightly tests", source: .generated))
+        #expect(
+            TitleResolver.resolve(candidates, firstPrompt: nil, projectName: "p")
+                == SessionTitle(text: "Flaky nightly tests", source: .generated))
         #expect(!TitleResolver.needsCompression(candidates))
     }
 
     @Test func generationPolicy() {
         let none = TitleCandidates()
         #expect(TitleResolver.needsGeneration(none, firstPrompt: "fix the bug"))
-        #expect(!TitleResolver.needsGeneration(none, firstPrompt: "<pasted_content id=\"1\"> </pasted_content id=\"1\">"))
+        #expect(
+            !TitleResolver.needsGeneration(none, firstPrompt: "<pasted_content id=\"1\"> </pasted_content id=\"1\">"))
         #expect(!TitleResolver.needsGeneration(TitleCandidates(sessionTitle: "Named"), firstPrompt: "fix"))
         #expect(!TitleResolver.needsGeneration(TitleCandidates(generated: "Done"), firstPrompt: "fix"))
         // Too early: Claude Code has not had its chance to write an ai-title.
         #expect(
             !TitleResolver.shouldRequestGeneration(
-                none, firstPrompt: "fix", completedTurns: 0, secondsSinceFirstPrompt: 5, transcriptReadSinceCheckpoint: true))
+                none, firstPrompt: "fix", completedTurns: 0, secondsSinceFirstPrompt: 5,
+                transcriptReadSinceCheckpoint: true))
         #expect(
             !TitleResolver.shouldRequestGeneration(
-                none, firstPrompt: "fix", completedTurns: 1, secondsSinceFirstPrompt: 5, transcriptReadSinceCheckpoint: false))
+                none, firstPrompt: "fix", completedTurns: 1, secondsSinceFirstPrompt: 5,
+                transcriptReadSinceCheckpoint: false))
         #expect(
             TitleResolver.shouldRequestGeneration(
-                none, firstPrompt: "fix", completedTurns: 1, secondsSinceFirstPrompt: 5, transcriptReadSinceCheckpoint: true))
+                none, firstPrompt: "fix", completedTurns: 1, secondsSinceFirstPrompt: 5,
+                transcriptReadSinceCheckpoint: true))
         #expect(
             TitleResolver.shouldRequestGeneration(
-                none, firstPrompt: "fix", completedTurns: 0, secondsSinceFirstPrompt: 31, transcriptReadSinceCheckpoint: false,
+                none, firstPrompt: "fix", completedTurns: 0, secondsSinceFirstPrompt: 31,
+                transcriptReadSinceCheckpoint: false,
                 transcriptUnavailable: true))
         #expect(TitleResolver.generationSource(none, firstPrompt: "  fix   the\nbug ") == "fix the bug")
         #expect(TitleResolver.haikuPrompt(for: "fix the bug").hasSuffix("Reply with the title only.\n\nfix the bug"))
@@ -73,11 +84,15 @@ struct TitleResolverTests {
     }
 
     @Test func promptTitles() {
-        func title(_ prompt: String) -> String { TitleResolver.resolve(TitleCandidates(), firstPrompt: prompt, projectName: "p").text }
+        func title(_ prompt: String) -> String {
+            TitleResolver.resolve(TitleCandidates(), firstPrompt: prompt, projectName: "p").text
+        }
         #expect(title("hey claude, can you please fix the login bug?") == "Fix the login bug")
         #expect(title("Please add dark mode") == "Add dark mode")
         #expect(title("sort the list") == "Sort the list")  // "so" is not a filler here
-        #expect(title("<pasted_content id=\"1\">\nstack trace\n</pasted_content id=\"1\"> why does this crash") == "Stack trace why does…")
+        #expect(
+            title("<pasted_content id=\"1\">\nstack trace\n</pasted_content id=\"1\"> why does this crash")
+                == "Stack trace why does…")
         #expect(title("```\ncode\n```") == "Code")
         #expect(title("claude.md cleanup") == "Claude.md cleanup")
     }
@@ -107,7 +122,8 @@ struct TitleResolverTests {
 @Suite("TranscriptTailParser")
 struct TranscriptTailParserTests {
     @Test func realisticTail() throws {
-        let signals = TranscriptTailParser.parse(tail: try ClaudeFixtures.data("transcript-tail", "jsonl"), isTruncated: true)
+        let signals = TranscriptTailParser.parse(
+            tail: try ClaudeFixtures.data("transcript-tail", "jsonl"), isTruncated: true)
         #expect(signals.customTitle == "a11y login")
         #expect(signals.aiTitle == "Improve login form accessibility")
         #expect(signals.summary == "Old summary from a previous conversation")
@@ -136,7 +152,9 @@ struct TranscriptTailParserTests {
     }
 
     @Test func headParseAndMerging() {
-        let head = #"{"type":"ai-title","aiTitle":"From the head"}"# + "\n" + #"{"type":"user","message":{"content":"[Request interr"#
+        let head =
+            #"{"type":"ai-title","aiTitle":"From the head"}"# + "\n"
+            + #"{"type":"user","message":{"content":"[Request interr"#
         let headSignals = TranscriptTailParser.parse(head: Data(head.utf8))
         #expect(headSignals.aiTitle == "From the head")
         #expect(!headSignals.interrupted)

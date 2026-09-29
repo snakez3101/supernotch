@@ -52,11 +52,8 @@ public enum IPCConfig {
     /// against a caller that never does, so a hook can never hang a session).
     public static let stdinReadTimeout: TimeInterval = 5
 
-    /// How long `supernotch-hook statusline` lets the user's original statusLine command run before it is
-    /// killed (its output is then dropped). SPEC §D.7 budgets 1 s; raised to 5 s because popular status
-    /// lines (ccstatusline via npx, git-heavy scripts) regularly need more, and a killed wrapper blanks the
-    /// user's status line. Claude Code itself cancels a stale run when a newer update starts.
-    public static let statusLineCommandTimeout: TimeInterval = 5
+    // `supernotch-hook statusline` execs the user's original command (no artificial timeout, no orphans):
+    // Claude Code reads and cancels it directly, exactly as without the bridge (SPEC §D.7 revised).
 
     /// Argument that precedes the user's original statusLine command in our bridge command:
     /// `'…/supernotch-hook' statusline --wrap '<original command>'`.

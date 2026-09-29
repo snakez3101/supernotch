@@ -93,7 +93,9 @@ public struct PermissionRequest: Sendable, Hashable, Identifiable {
     /// Never echoed: deny/ask rules, `replaceRules`/`removeRules`, and modes that switch permission checks
     /// off (`bypassPermissions`, `dontAsk`, `auto`).
     public var alwaysAllowUpdates: [JSONValue] {
-        func first(_ predicate: (JSONValue) -> Bool) -> [JSONValue]? { suggestions.first(where: predicate).map { [$0] } }
+        func first(_ predicate: (JSONValue) -> Bool) -> [JSONValue]? {
+            suggestions.first(where: predicate).map { [$0] }
+        }
         return first { entry in
             entry["type"]?.stringValue == "addRules" && entry["behavior"]?.stringValue == "allow"
                 && !(entry["rules"]?.arrayValue ?? []).isEmpty

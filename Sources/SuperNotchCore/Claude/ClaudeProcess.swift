@@ -20,7 +20,8 @@ public enum ClaudeProcess {
             // Native installer: ~/.local/share/claude/versions/2.1.284 (argv0 may be that path).
             if executablePath.contains("/claude/versions/") { return true }
         }
-        let runner = scriptRunners.contains(argv0) || executablePath.map { scriptRunners.contains(basename($0)) } == true
+        let runner =
+            scriptRunners.contains(argv0) || executablePath.map { scriptRunners.contains(basename($0)) } == true
         guard runner else { return false }
         return arguments.dropFirst().prefix(3).contains(where: isClaudeScript)
     }
@@ -34,13 +35,16 @@ public enum ClaudeProcess {
     /// Nil when no absolute path is known (the app must never fall back to a bare "claude" under launchd).
     public static func invocation(arguments: [String], executablePath: String?) -> [String]? {
         let argv0 = arguments.first ?? ""
-        let runner = scriptRunners.contains(basename(argv0))
+        let runner =
+            scriptRunners.contains(basename(argv0))
             || executablePath.map { scriptRunners.contains(basename($0)) } == true
         if runner {
-            guard let script = arguments.dropFirst().prefix(3).first(where: isClaudeScript), script.hasPrefix("/") else {
+            guard let script = arguments.dropFirst().prefix(3).first(where: isClaudeScript), script.hasPrefix("/")
+            else {
                 return nil
             }
-            let interpreter = executablePath.flatMap { $0.hasPrefix("/") ? $0 : nil } ?? (argv0.hasPrefix("/") ? argv0 : nil)
+            let interpreter =
+                executablePath.flatMap { $0.hasPrefix("/") ? $0 : nil } ?? (argv0.hasPrefix("/") ? argv0 : nil)
             return interpreter.map { [$0, script] }
         }
         if let executablePath, executablePath.hasPrefix("/") { return [executablePath] }

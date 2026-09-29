@@ -83,9 +83,10 @@ public struct HookInstallSpec: Sendable, Hashable {
 
     public static let defaultMarker = "SuperNotch/bin/supernotch-hook"
 
-    public init(hookCommand: String, statusLineCommand: String?, events: [HookEventName],
-        marker: String = HookInstallSpec.defaultMarker)
-    {
+    public init(
+        hookCommand: String, statusLineCommand: String?, events: [HookEventName],
+        marker: String = HookInstallSpec.defaultMarker
+    ) {
         self.hookCommand = hookCommand
         self.statusLineCommand = statusLineCommand
         self.events = events
@@ -114,6 +115,12 @@ public struct HookInstallSpec: Sendable, Hashable {
 
     public func timeout(for event: HookEventName) -> Int {
         event.isBlocking ? IPCConfig.permissionHookTimeout : IPCConfig.defaultHookTimeout
+    }
+
+    /// The `timeout` key we write. None for SessionEnd: Claude Code raises the whole exit budget (default
+    /// 1.5 s) to the highest per-hook SessionEnd timeout, and our hook needs a few milliseconds.
+    public func writtenTimeout(for event: HookEventName) -> Int? {
+        event == .sessionEnd ? nil : timeout(for: event)
     }
 
     /// The statusLine command to install, wrapping `original` (the user's command) when there is one.
@@ -388,9 +395,11 @@ public enum HookSettingsMerger {
     /// Removes all our entries; restores the original statusLine; drops containers we created that became empty.
     /// Pass the manifest written for this settings file (nil if it is lost: arrays and the `hooks` object that
     /// only contained our entries are then removed).
-    public static func uninstall(from settings: JSONValue, manifest: HookManifest?, marker: String =
-        HookInstallSpec.defaultMarker) throws -> JSONValue
-    {
+    public static func uninstall(
+        from settings: JSONValue, manifest: HookManifest?,
+        marker: String =
+            HookInstallSpec.defaultMarker
+    ) throws -> JSONValue {
         guard case .object(let object) = settings else {
             throw HookSettingsError("settings.json does not contain a JSON object. Nothing was changed.")
         }
@@ -424,7 +433,7 @@ public enum HookSettingsMerger {
             if ours.count > 1 { mismatch = true }
             let exact = ours.contains { entry in
                 entry["command"]?.stringValue == spec.hookCommand
-                    && entry["timeout"]?.intValue == spec.timeout(for: event)
+                    && entry["timeout"]?.intValue == spec.writtenTimeout(for: event)
             }
             if !exact { missing.append(event) }
         }
@@ -491,7 +500,7 @@ public enum HookSettingsMerger {
         var entry = JSONObject()
         entry["type"] = "command"
         entry["command"] = .string(spec.hookCommand)
-        entry["timeout"] = .number(Double(spec.timeout(for: event)))
+        if let timeout = spec.writtenTimeout(for: event) { entry["timeout"] = .number(Double(timeout)) }
         var group = JSONObject()
         if event.supportsMatcher { group["matcher"] = "*" }
         group["hooks"] = .array([.object(entry)])

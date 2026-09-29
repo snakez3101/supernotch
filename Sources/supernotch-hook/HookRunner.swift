@@ -125,7 +125,7 @@ enum HookRunner {
             debugLog("no reply for \(envelope.id)")
             return nil
         }
-        guard let reply = try? NDJSON.decodeLine(HookReply.self, from: replyLine), reply.id == envelope.id else {
+        guard let reply = HookReply.parse(line: replyLine), reply.id == envelope.id else {
             debugLog("invalid reply for \(envelope.id)")
             return nil
         }

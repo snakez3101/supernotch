@@ -471,7 +471,9 @@ public struct SessionStore: Sendable {
     }
 
     /// Drops every pending card of the session and lets the held hooks fall back to the native prompt.
-    private mutating func clearPending(_ session: inout Session, _ meta: inout SessionMeta, effects: inout [SessionEffect]) {
+    private mutating func clearPending(
+        _ session: inout Session, _ meta: inout SessionMeta, effects: inout [SessionEffect]
+    ) {
         for requestID in session.pendingPermissionIDs {
             removePermission(requestID, session: &session, meta: &meta, passthrough: true, effects: &effects)
         }
@@ -553,7 +555,8 @@ public struct SessionStore: Sendable {
             let merged = (usage.map { $0.merged(with: report) } ?? report).pruned(now: now)
             let next = merged.isEmpty ? nil : merged
             let windowsChanged = next?.fiveHour != usage?.fiveHour || next?.sevenDay != usage?.sevenDay
-            let refreshed = next.map { new in usage.map { new.updatedAt.timeIntervalSince($0.updatedAt) >= 60 } ?? true }
+            let refreshed = next.map { new in usage.map { new.updatedAt.timeIntervalSince($0.updatedAt) >= 60 } ?? true
+            }
             if windowsChanged || refreshed == true {
                 usage = next
                 effects.append(.usageUpdated)
@@ -577,7 +580,8 @@ public struct SessionStore: Sendable {
                 remove(id, now: now, effects: &effects)
                 continue
             }
-            if let parkedAt = meta[id]?.parkedAt, now.timeIntervalSince(parkedAt) >= configuration.desktopParkedLifetime,
+            if let parkedAt = meta[id]?.parkedAt,
+                now.timeIntervalSince(parkedAt) >= configuration.desktopParkedLifetime,
                 idleFor >= configuration.desktopParkedLifetime
             {
                 remove(id, now: now, effects: &effects)
@@ -776,9 +780,10 @@ public struct SessionStore: Sendable {
         // Checkpoint: the transcript must have been read after the turn ended / after we asked for a re-read.
         let checkpoint = [meta.lastStopAt, meta.titleRefreshRequestedAt].compactMap { $0 }.max()
         let readSince = meta.lastTranscriptAt.map { read in checkpoint.map { read >= $0 } ?? false } ?? false
-        let askedLongAgo = meta.titleRefreshRequestedAt.map {
-            now.timeIntervalSince($0) >= configuration.titleGenerationGrace
-        } ?? false
+        let askedLongAgo =
+            meta.titleRefreshRequestedAt.map {
+                now.timeIntervalSince($0) >= configuration.titleGenerationGrace
+            } ?? false
         if TitleResolver.shouldRequestGeneration(
             candidates, firstPrompt: session.firstPrompt, completedTurns: meta.completedTurns,
             secondsSinceFirstPrompt: sinceFirstPrompt, transcriptReadSinceCheckpoint: readSince,

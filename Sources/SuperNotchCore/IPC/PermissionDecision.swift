@@ -1,6 +1,6 @@
 import Foundation
 
-// CONTRACT FILE (SPEC §D.5). Owner: claude-core.
+// CONTRACT FILE (SPEC §D.1, §D.7). Owner: claude-core.
 
 /// The user's answer to a PermissionRequest, as sent app → hook and printed by the hook to stdout.
 public enum PermissionDecision: Sendable, Hashable {
@@ -37,6 +37,40 @@ public enum PermissionDecision: Sendable, Hashable {
 
     /// Exactly what `supernotch-hook` writes to stdout (single line, no trailing newline).
     public var hookStdout: String { hookOutput.serialized() }
+}
+
+extension PermissionDecision {
+    /// Order-preserving decoding from a parsed `{behavior, updatedPermissions?, message?}` object (the hook uses
+    /// this so `updatedPermissions` reaches Claude Code exactly as the app sent it). Nil for anything else.
+    public init?(json: JSONValue) {
+        switch json["behavior"]?.stringValue {
+        case "allow"?:
+            if let updates = json["updatedPermissions"]?.arrayValue {
+                self = .allowAlways(updatedPermissions: updates)
+            } else {
+                self = .allow
+            }
+        case "deny"?:
+            self = .deny(message: json["message"]?.stringValue ?? Self.defaultDenyMessage)
+        default:
+            return nil
+        }
+    }
+}
+
+extension HookReply {
+    /// Order-preserving parse of one reply line (see `PermissionDecision.init?(json:)`). Nil when the line is not
+    /// a reply object; `decision` is nil for `null`, a missing key or an unknown behavior (passthrough).
+    public static func parse(line: Data) -> HookReply? {
+        var trimmed = line
+        while let last = trimmed.last, last == 0x0A || last == 0x0D { trimmed.removeLast() }
+        guard let json = try? JSONValue.parse(trimmed), case .object = json, let id = json["id"]?.stringValue else {
+            return nil
+        }
+        return HookReply(
+            v: json["v"]?.intValue ?? IPCConfig.protocolVersion, id: id,
+            decision: json["decision"].flatMap(PermissionDecision.init(json:)))
+    }
 }
 
 extension PermissionDecision: Codable {

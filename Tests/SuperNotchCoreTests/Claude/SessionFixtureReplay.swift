@@ -70,7 +70,8 @@ enum ClaudeFixtures {
         "cowork": HookContext(
             hookVersion: "test", claudePID: 7373, bundleIdentifier: "com.anthropic.claudefordesktop",
             entrypoint: "local-agent"),
-        "internal": HookContext(hookVersion: "test", claudePID: 7474, entrypoint: "cli", isPrintMode: true, isInternal: true),
+        "internal": HookContext(
+            hookVersion: "test", claudePID: 7474, entrypoint: "cli", isPrintMode: true, isInternal: true),
         "remote": HookContext(hookVersion: "test", isRemote: true),
     ]
 }
@@ -131,7 +132,9 @@ struct SessionSequenceReplay {
                 TranscriptSignals(
                     customTitle: signals?["customTitle"]?.stringValue, aiTitle: signals?["aiTitle"]?.stringValue,
                     summary: signals?["summary"]?.stringValue, interrupted: signals?["interrupted"]?.boolValue ?? false,
-                    interruptedAt: signals?["interruptedAt"]?.doubleValue.map { ClaudeFixtures.origin.addingTimeInterval($0) }))
+                    interruptedAt: signals?["interruptedAt"]?.doubleValue.map {
+                        ClaudeFixtures.origin.addingTimeInterval($0)
+                    }))
         }
         if let sessionID = step["title"]?.stringValue {
             return .titleGenerated(sessionID: sessionID, title: step["text"]?.stringValue ?? "")

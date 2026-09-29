@@ -90,20 +90,32 @@ struct DangerousCommandClassifierTests {
     }
 
     @Test func multipleReasonsAreDeduplicated() {
-        let assessment = DangerousCommandClassifier.assess(command: "sudo rm -rf /tmp/a && sudo rm -rf /tmp/b && git push -f")
+        let assessment = DangerousCommandClassifier.assess(
+            command: "sudo rm -rf /tmp/a && sudo rm -rf /tmp/b && git push -f")
         #expect(assessment.reasons == [Reason.sudo, Reason.recursiveDelete, Reason.forcePush])
     }
 
     @Test func toolAwareAssessment() {
         #expect(DangerousCommandClassifier.assess(toolName: "Bash", input: ["command": "rm -rf x"]).isDangerous)
-        #expect(DangerousCommandClassifier.assess(toolName: "PowerShell", input: ["command": "Format-Volume -DriveLetter D"]).isDangerous)
+        #expect(
+            DangerousCommandClassifier.assess(
+                toolName: "PowerShell", input: ["command": "Format-Volume -DriveLetter D"]
+            ).isDangerous)
         #expect(!DangerousCommandClassifier.assess(toolName: "Read", input: ["file_path": "/etc/hosts"]).isDangerous)
-        #expect(DangerousCommandClassifier.assess(toolName: "Write", input: ["file_path": "/Users/me/.ssh/config"]).reasons == [Reason.sensitiveFile])
-        #expect(DangerousCommandClassifier.assess(toolName: "Edit", input: ["file_path": "/Users/me/.zshrc"]).isDangerous)
-        #expect(DangerousCommandClassifier.assess(toolName: "Edit", input: ["file_path": "/Users/me/.claude/settings.json"]).isDangerous)
-        #expect(!DangerousCommandClassifier.assess(toolName: "Edit", input: ["file_path": "/Users/me/app/src/main.swift"]).isDangerous)
+        #expect(
+            DangerousCommandClassifier.assess(toolName: "Write", input: ["file_path": "/Users/me/.ssh/config"]).reasons
+                == [Reason.sensitiveFile])
+        #expect(
+            DangerousCommandClassifier.assess(toolName: "Edit", input: ["file_path": "/Users/me/.zshrc"]).isDangerous)
+        #expect(
+            DangerousCommandClassifier.assess(toolName: "Edit", input: ["file_path": "/Users/me/.claude/settings.json"])
+                .isDangerous)
+        #expect(
+            !DangerousCommandClassifier.assess(toolName: "Edit", input: ["file_path": "/Users/me/app/src/main.swift"])
+                .isDangerous)
         #expect(!DangerousCommandClassifier.assess(toolName: "Bash", input: [:]).isDangerous)
-        #expect(!DangerousCommandClassifier.assess(toolName: "mcp__db__query", input: ["sql": "DROP TABLE x"]).isDangerous)
+        #expect(
+            !DangerousCommandClassifier.assess(toolName: "mcp__db__query", input: ["sql": "DROP TABLE x"]).isDangerous)
     }
 }
 
@@ -111,13 +123,24 @@ struct DangerousCommandClassifierTests {
 struct PermissionRequestTests {
     func request(tool: String, input: JSONValue, suggestions: [JSONValue] = []) -> PermissionRequest {
         let envelope = makeEnvelope(
-            .permissionRequest, extra: [("tool_name", .string(tool)), ("tool_input", input), ("permission_suggestions", .array(suggestions))],
+            .permissionRequest,
+            extra: [
+                ("tool_name", .string(tool)), ("tool_input", input), ("permission_suggestions", .array(suggestions)),
+            ],
             id: "r1")
-        return PermissionRequest(envelope: envelope, now: Date(timeIntervalSince1970: 0))!
+        let hook = envelope.hook
+        let summary = PermissionSummary.make(toolName: tool, input: input)
+        return PermissionRequest(envelope: envelope, now: Date(timeIntervalSince1970: 0))
+            ?? PermissionRequest(
+                id: "r1", sessionID: hook.sessionID ?? "", toolName: tool, toolInput: input, summary: summary.summary,
+                detail: summary.detail, danger: .safe, suggestions: suggestions,
+                receivedAt: Date(timeIntervalSince1970: 0))
     }
 
     @Test func summaries() {
-        #expect(request(tool: "Bash", input: ["command": "npm test\nnpm run lint", "description": "Run checks"]).summary == "npm test ⏎ npm run lint")
+        #expect(
+            request(tool: "Bash", input: ["command": "npm test\nnpm run lint", "description": "Run checks"]).summary
+                == "npm test ⏎ npm run lint")
         #expect(request(tool: "Bash", input: ["command": "ls", "description": "List"]).detail == "List")
         let edit = request(tool: "Edit", input: ["file_path": "/Users/me/app/Sources/App/main.swift"])
         #expect(edit.summary == "Edit App/main.swift")
@@ -125,7 +148,9 @@ struct PermissionRequestTests {
         #expect(request(tool: "WebFetch", input: ["url": "https://example.com"]).summary == "Fetch https://example.com")
         #expect(request(tool: "ExitPlanMode", input: ["plan": "## Plan"]).summary == "Approve plan")
         #expect(request(tool: "mcp__github__create_issue", input: ["title": "x"]).summary == "github · create_issue")
-        #expect(request(tool: "Agent", input: ["subagent_type": "Explore", "description": "Find usages"]).summary == "Run Explore")
+        #expect(
+            request(tool: "Agent", input: ["subagent_type": "Explore", "description": "Find usages"]).summary
+                == "Run Explore")
         let long = request(tool: "Bash", input: ["command": .string(String(repeating: "a", count: 500))])
         #expect(long.summary.count == 160)
         #expect(long.danger == .safe)
@@ -138,7 +163,9 @@ struct PermissionRequestTests {
         ]
         let sessionMode: JSONValue = ["type": "setMode", "mode": "acceptEdits", "destination": "session"]
         let bypass: JSONValue = ["type": "setMode", "mode": "bypassPermissions", "destination": "session"]
-        let denyRule: JSONValue = ["type": "addRules", "rules": [["toolName": "Bash"]], "behavior": "deny", "destination": "session"]
+        let denyRule: JSONValue = [
+            "type": "addRules", "rules": [["toolName": "Bash"]], "behavior": "deny", "destination": "session",
+        ]
 
         let both = request(tool: "Bash", input: ["command": "npm test"], suggestions: [sessionMode, addRule])
         #expect(both.canAlwaysAllow)
@@ -153,13 +180,18 @@ struct PermissionRequestTests {
         #expect(!unsafe.canAlwaysAllow)
         #expect(unsafe.alwaysAllowDecision == .allow)
 
-        let sessionRule: JSONValue = ["type": "addRules", "rules": [["toolName": "WebFetch"]], "behavior": "allow", "destination": "session"]
-        #expect(request(tool: "WebFetch", input: ["url": "u"], suggestions: [sessionRule]).alwaysAllowTitle == "Allow for session")
+        let sessionRule: JSONValue = [
+            "type": "addRules", "rules": [["toolName": "WebFetch"]], "behavior": "allow", "destination": "session",
+        ]
+        #expect(
+            request(tool: "WebFetch", input: ["url": "u"], suggestions: [sessionRule]).alwaysAllowTitle
+                == "Allow for session")
     }
 
     @Test func alwaysAllowStdoutMatchesDocs() {
         let addRule: JSONValue = [
-            "type": "addRules", "rules": [["toolName": "Bash", "ruleContent": "rm -rf node_modules"]], "behavior": "allow",
+            "type": "addRules", "rules": [["toolName": "Bash", "ruleContent": "rm -rf node_modules"]],
+            "behavior": "allow",
             "destination": "localSettings",
         ]
         let decision = PermissionDecision.allowAlways(updatedPermissions: [addRule])
@@ -183,7 +215,9 @@ struct PermissionRequestTests {
     @Test func subagentRequestsCarryTheirAgent() throws {
         let envelope = makeEnvelope(
             .permissionRequest,
-            extra: [("tool_name", "Bash"), ("tool_input", ["command": "ls"]), ("agent_id", "a1"), ("agent_type", "Explore")],
+            extra: [
+                ("tool_name", "Bash"), ("tool_input", ["command": "ls"]), ("agent_id", "a1"), ("agent_type", "Explore"),
+            ],
             id: "r9")
         let request = try #require(PermissionRequest(envelope: envelope, now: Date()))
         #expect(request.isFromSubagent)

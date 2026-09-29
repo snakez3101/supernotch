@@ -29,8 +29,9 @@ public struct KeyCombo: Codable, Sendable, Hashable, CustomStringConvertible {
     public var hasShift: Bool { carbonModifiers & Self.shiftKey != 0 }
     public var hasControl: Bool { carbonModifiers & Self.controlKey != 0 }
 
-    /// A hotkey needs at least one of ⌘ ⌥ ⌃ (shift alone would swallow normal typing).
-    public var isValidGlobalHotkey: Bool { hasCommand || hasOption || hasControl }
+    /// A global hotkey needs ⌘ or ⌃. Shift alone would swallow normal typing, and macOS 15+ refuses
+    /// `RegisterEventHotKey` combinations whose only modifiers are ⌥ or ⌥⇧.
+    public var isValidGlobalHotkey: Bool { hasCommand || hasControl }
 
     /// "⌥⌘N". Modifier order follows Apple HIG: ⌃ ⌥ ⇧ ⌘.
     public var description: String {

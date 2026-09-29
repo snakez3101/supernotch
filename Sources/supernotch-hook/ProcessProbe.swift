@@ -36,15 +36,19 @@ enum ProcessProbe {
         var chain: [HookProcessEntry] = []
         var claude: Info?
         var firstTTY: String?
+        var hostApp: String?
         let hintedPID = context.claudePID  // CLAUDE_PID from the environment, if Claude Code exported it
         var pid = getppid()
         for _ in 0..<maxHops {
-            guard pid > 0, let info = info(for: pid) else { break }
+            // argv/paths are only needed until both the claude process and the GUI host app are known.
+            guard pid > 0, let info = info(for: pid, detailed: claude == nil || hostApp == nil) else { break }
             chain.append(HookProcessEntry(pid: info.pid, name: info.name, path: info.path))
             if claude == nil,
                 info.pid == hintedPID || ClaudeProcess.isClaude(arguments: info.arguments, executablePath: info.path)
             {
                 claude = info
+            } else if claude != nil, hostApp == nil, let path = info.path {
+                hostApp = HookContext.appBundlePath(in: path)
             }
             if firstTTY == nil { firstTTY = info.tty }
             guard info.parent > 0, info.parent != pid, pid != 1 else { break }
@@ -64,14 +68,15 @@ enum ProcessProbe {
         }
         if !chain.isEmpty {
             context.processChain = chain
-            if let host = ClaudeProcess.hostAppPath(chain: chain, claudePID: claude?.pid) {
+            if let host = hostApp ?? ClaudeProcess.hostAppPath(chain: chain, claudePID: claude?.pid) {
                 context.hostAppPath = host
             }
         }
     }
 
     #if canImport(Darwin)
-        static func info(for pid: Int32) -> Info? {
+        /// `detailed == false` skips KERN_PROCARGS2 (argv + executable path; the buffer is up to kern.argmax).
+        static func info(for pid: Int32, detailed: Bool) -> Info? {
             var kinfo = kinfo_proc()
             var size = MemoryLayout<kinfo_proc>.stride
             var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
@@ -82,7 +87,7 @@ enum ProcessProbe {
             let name = withUnsafeBytes(of: kinfo.kp_proc.p_comm) { raw in
                 String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
             }
-            let (path, arguments) = processArguments(for: pid)
+            let (path, arguments) = detailed ? processArguments(for: pid) : (nil, [])
             return Info(
                 pid: pid, parent: parent, name: name, path: path, arguments: arguments, startTime: startTime,
                 tty: terminal(device: kinfo.kp_eproc.e_tdev))
@@ -120,7 +125,7 @@ enum ProcessProbe {
             return (path.isEmpty ? nil : path, arguments)
         }
     #elseif os(Linux)
-        static func info(for pid: Int32) -> Info? {
+        static func info(for pid: Int32, detailed: Bool) -> Info? {
             guard let stat = try? String(contentsOfFile: "/proc/\(pid)/stat", encoding: .utf8),
                 let open = stat.firstIndex(of: "("), let closing = stat.lastIndex(of: ")")
             else { return nil }
@@ -134,9 +139,13 @@ enum ProcessProbe {
                 let hertz = Double(sysconf(Int32(_SC_CLK_TCK)))
                 return boot + ticks / (hertz > 0 ? hertz : 100)
             }
-            let cmdline = FileManager.default.contents(atPath: "/proc/\(pid)/cmdline") ?? Data()
-            let arguments = cmdline.split(separator: 0).map { String(decoding: $0, as: UTF8.self) }
-            let path = try? FileManager.default.destinationOfSymbolicLink(atPath: "/proc/\(pid)/exe")
+            var arguments: [String] = []
+            var path: String?
+            if detailed {
+                let cmdline = FileManager.default.contents(atPath: "/proc/\(pid)/cmdline") ?? Data()
+                arguments = cmdline.split(separator: 0).map { String(decoding: $0, as: UTF8.self) }
+                path = try? FileManager.default.destinationOfSymbolicLink(atPath: "/proc/\(pid)/exe")
+            }
             return Info(
                 pid: pid, parent: parent, name: name, path: path, arguments: arguments, startTime: startTime, tty: tty)
         }
@@ -150,6 +159,6 @@ enum ProcessProbe {
             return nil
         }()
     #else
-        static func info(for pid: Int32) -> Info? { nil }
+        static func info(for pid: Int32, detailed: Bool) -> Info? { nil }
     #endif
 }

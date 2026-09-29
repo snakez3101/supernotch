@@ -56,9 +56,11 @@ public struct ClaudeVersion: Sendable, Hashable, Comparable, CustomStringConvert
     public let components: [Int]
 
     public init?(_ text: String) {
-        guard let token = text.split(whereSeparator: { $0 == " " || $0 == "\n" }).first(where: {
-            $0.first?.isNumber == true
-        }) else { return nil }
+        guard
+            let token = text.split(whereSeparator: { $0 == " " || $0 == "\n" }).first(where: {
+                $0.first?.isNumber == true
+            })
+        else { return nil }
         let numbers = token.split(separator: ".").map { part in Int(part.prefix(while: \.isNumber)) ?? 0 }
         guard !numbers.isEmpty else { return nil }
         components = numbers

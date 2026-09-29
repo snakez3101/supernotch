@@ -308,7 +308,8 @@ public enum DangerousCommandClassifier {
     /// Short option clusters ("-rf", "-Rv") and long options ("--recursive").
     static func hasShortFlag(_ args: [String], _ letters: Set<Character>) -> Bool {
         args.contains { arg in
-            arg.hasPrefix("-") && !arg.hasPrefix("--") && arg.count > 1 && arg.dropFirst().contains(where: letters.contains)
+            arg.hasPrefix("-") && !arg.hasPrefix("--") && arg.count > 1
+                && arg.dropFirst().contains(where: letters.contains)
         }
     }
 

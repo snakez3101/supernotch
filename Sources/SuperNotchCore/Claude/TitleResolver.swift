@@ -163,7 +163,8 @@ public enum TitleResolver {
     // MARK: - Internals
 
     /// Best native title (non-empty after cleaning). `projectName` nil skips the default-name check.
-    static func nativeTitle(_ candidates: TitleCandidates, projectName: String?) -> (text: String, source: TitleSource)? {
+    static func nativeTitle(_ candidates: TitleCandidates, projectName: String?) -> (text: String, source: TitleSource)?
+    {
         let ordered: [(String?, TitleSource)] = [
             (candidates.customTitle, .customTitle),
             (candidates.aiTitle, .aiTitle),

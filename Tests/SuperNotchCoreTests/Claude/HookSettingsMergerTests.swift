@@ -14,7 +14,8 @@ struct HookSettingsMergerTests {
     let now = Date(timeIntervalSince1970: 0)
     let settingsFile = "/Users/me/.claude/settings.json"
 
-    func install(_ json: String?, manifest: HookManifest? = nil, spec: HookInstallSpec? = nil) throws -> HookMergeResult {
+    func install(_ json: String?, manifest: HookManifest? = nil, spec: HookInstallSpec? = nil) throws -> HookMergeResult
+    {
         try HookSettingsMerger.install(
             spec: spec ?? self.spec, into: try HookSettingsMerger.parseSettings(json.map { Data($0.utf8) }),
             previousManifest: manifest, settingsFile: settingsFile, appVersion: "0.1.0", now: now)
@@ -30,7 +31,8 @@ struct HookSettingsMergerTests {
     }
 
     @Test func installKeepsUserKeysOrderAndIsIdempotent() throws {
-        let user = #"{"model":"opus","hooks":{"Stop":[{"hooks":[{"type":"command","command":"say hi"}]}]},"statusLine":{"type":"command","command":"~/.claude/sl.sh","padding":1},"z":1}"#
+        let user =
+            #"{"model":"opus","hooks":{"Stop":[{"hooks":[{"type":"command","command":"say hi"}]}]},"statusLine":{"type":"command","command":"~/.claude/sl.sh","padding":1},"z":1}"#
         let first = try install(user)
         let object = try #require(first.settings.objectValue)
         #expect(object.keys == ["model", "hooks", "statusLine", "z"])
@@ -56,7 +58,10 @@ struct HookSettingsMergerTests {
         let original = String(decoding: try ClaudeFixtures.data("settings-user", "json"), as: UTF8.self)
         let installed = try install(original)
         let root = try #require(installed.settings.objectValue)
-        #expect(root.keys == ["$schema", "model", "permissions", "env", "hooks", "statusLine", "alwaysThinkingEnabled", "unicode"])
+        #expect(
+            root.keys == [
+                "$schema", "model", "permissions", "env", "hooks", "statusLine", "alwaysThinkingEnabled", "unicode",
+            ])
         #expect(root["unicode"]?.stringValue == "Grüße ✓ \u{2028} line")
         let hooks = try #require(installed.settings["hooks"]?.objectValue)
         #expect(hooks["CustomFutureEvent"] == ["unknown": "shape"])
@@ -64,7 +69,9 @@ struct HookSettingsMergerTests {
         #expect(hooks["PreToolUse"]?[0]?["matcher"]?.stringValue == "Bash")
         #expect(installed.settings["statusLine"]?["refreshInterval"]?.intValue == 5)
         #expect(installed.settings["statusLine"]?["padding"]?.intValue == 0)
-        #expect(Set(installed.manifest.createdEventKeys) == Set(spec.events.map(\.rawValue)).subtracting(["PreToolUse", "Notification"]))
+        #expect(
+            Set(installed.manifest.createdEventKeys)
+                == Set(spec.events.map(\.rawValue)).subtracting(["PreToolUse", "Notification"]))
         #expect(!installed.manifest.createdHooksObject)
 
         let removed = try HookSettingsMerger.uninstall(from: installed.settings, manifest: installed.manifest)
@@ -73,7 +80,8 @@ struct HookSettingsMergerTests {
     }
 
     @Test func uninstallRestoresOriginal() throws {
-        let user = #"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"say hi"}]}]},"statusLine":{"type":"command","command":"sl"}}"#
+        let user =
+            #"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"say hi"}]}]},"statusLine":{"type":"command","command":"sl"}}"#
         let installed = try install(user)
         let removed = try HookSettingsMerger.uninstall(from: installed.settings, manifest: installed.manifest)
         #expect(removed.serialized() == (try JSONValue.parse(user)).serialized())
@@ -113,7 +121,9 @@ struct HookSettingsMergerTests {
 
     @Test func serializationIsPrettyWithTrailingNewline() throws {
         let data = HookSettingsMerger.serialize(try JSONValue.parse(#"{"a":[1,{"b":null}],"c":{}}"#))
-        #expect(String(decoding: data, as: UTF8.self) == "{\n  \"a\": [\n    1,\n    {\n      \"b\": null\n    }\n  ],\n  \"c\": {}\n}\n")
+        #expect(
+            String(decoding: data, as: UTF8.self)
+                == "{\n  \"a\": [\n    1,\n    {\n      \"b\": null\n    }\n  ],\n  \"c\": {}\n}\n")
     }
 
     @Test func entryShapePerEvent() throws {
@@ -125,6 +135,7 @@ struct HookSettingsMergerTests {
         #expect(hooks["PermissionRequest"]?[0]?["hooks"]?[0]?["timeout"]?.intValue == 300)
         #expect(hooks["PostToolUse"]?[0]?["hooks"]?[0]?["timeout"]?.intValue == 10)
         #expect(hooks["PostToolUse"]?[0]?["hooks"]?[0]?["type"]?.stringValue == "command")
+        #expect(hooks["SessionEnd"]?[0]?["hooks"]?[0]?["timeout"] == nil)  // keeps the user's 1.5 s exit budget
     }
 
     @Test func statusLineNeverWrapsItself() throws {
@@ -140,7 +151,9 @@ struct HookSettingsMergerTests {
         let result = try install(poisoned)
         #expect(result.manifest.originalStatusLine == nil)
         #expect(result.settings["statusLine"]?["command"]?.stringValue == "'\(Self.binary)' statusline")
-        #expect(spec.statusLineCommand(wrapping: "'/x/SuperNotch/bin/supernotch-hook' statusline") == spec.statusLineCommand)
+        #expect(
+            spec.statusLineCommand(wrapping: "'/x/SuperNotch/bin/supernotch-hook' statusline") == spec.statusLineCommand
+        )
     }
 
     @Test func disablingTheBridgeRestoresTheUsersStatusLine() throws {
@@ -180,13 +193,15 @@ struct HookSettingsMergerTests {
             HookSettingsMerger.state(of: try JSONValue.parse(wrongTimeout), spec: spec)
                 == .needsRepair(missing: [.permissionRequest]))
         // Extended events installed but the CLI was downgraded below the gate.
-        let oldSpec = HookInstallSpec.make(hookBinaryPath: Self.binary, claudeVersion: ClaudeVersion("2.1.50"), wrapStatusLine: true)
+        let oldSpec = HookInstallSpec.make(
+            hookBinaryPath: Self.binary, claudeVersion: ClaudeVersion("2.1.50"), wrapStatusLine: true)
         #expect(HookSettingsMerger.state(of: full, spec: oldSpec) == .needsRepair(missing: []))
         #expect(HookSettingsMerger.state(of: full, spec: spec) == .installed)
     }
 
     @Test func extendedEventsAreVersionGated() {
-        let old = HookInstallSpec.make(hookBinaryPath: "/b", claudeVersion: ClaudeVersion("2.1.100"), wrapStatusLine: false)
+        let old = HookInstallSpec.make(
+            hookBinaryPath: "/b", claudeVersion: ClaudeVersion("2.1.100"), wrapStatusLine: false)
         #expect(!old.events.contains(.stopFailure))
         #expect(!old.events.contains(.postToolUseFailure))
         #expect(old.events.contains(.permissionRequest))
@@ -196,7 +211,8 @@ struct HookSettingsMergerTests {
         let unknown = HookInstallSpec.make(hookBinaryPath: "/b", claudeVersion: nil, wrapStatusLine: false)
         #expect(unknown.events == HookEventName.baseEvents)
         // A CLI older than PermissionRequest (2.0.45) must not get the key: it would ignore the whole file.
-        let ancient = HookInstallSpec.make(hookBinaryPath: "/b", claudeVersion: ClaudeVersion("2.0.30"), wrapStatusLine: false)
+        let ancient = HookInstallSpec.make(
+            hookBinaryPath: "/b", claudeVersion: ClaudeVersion("2.0.30"), wrapStatusLine: false)
         #expect(!ancient.events.contains(.permissionRequest))
         #expect(ancient.events.contains(.stop))
     }
@@ -210,7 +226,8 @@ struct HookSettingsMergerTests {
     }
 
     @Test func manifestDecodingIsTolerant() throws {
-        let manifest = try JSONDecoder().decode(HookManifest.self, from: Data(#"{"settingsFile":"/x","events":"oops"}"#.utf8))
+        let manifest = try JSONDecoder().decode(
+            HookManifest.self, from: Data(#"{"settingsFile":"/x","events":"oops"}"#.utf8))
         #expect(manifest.settingsFile == "/x")
         #expect(manifest.events.isEmpty)
         let installed = try install(#"{"statusLine":{"type":"command","command":"sl.sh"}}"#)
@@ -242,28 +259,36 @@ struct HookSettingsMergerTests {
                 == "settings.json.2026-09-21T14-13-20Z.bak")
         #expect(
             HookSettingsMerger.backupPath(
-                directory: "/Users/me/Library/Application Support/SuperNotch/Backups/", settingsFile: "/w/.claude-work/settings.json",
+                directory: "/Users/me/Library/Application Support/SuperNotch/Backups/",
+                settingsFile: "/w/.claude-work/settings.json",
                 date: date)
-                == "/Users/me/Library/Application Support/SuperNotch/Backups/.claude-work.settings.json.2026-09-21T14-13-20Z.bak")
+                == "/Users/me/Library/Application Support/SuperNotch/Backups/.claude-work.settings.json.2026-09-21T14-13-20Z.bak"
+        )
         #expect(HookSettingsMerger.hooksDisabled(in: try JSONValue.parse(#"{"disableAllHooks":true}"#)))
         #expect(!HookSettingsMerger.hooksDisabled(in: nil))
         let preview = HookSettingsMerger.previewEntries(spec: spec, originalStatusLineCommand: "sl.sh")
         #expect(preview["hooks"]?.objectValue?.count == spec.events.count)
         #expect(preview["statusLine"]?["command"]?.stringValue == "'\(Self.binary)' statusline --wrap 'sl.sh'")
         #expect(HookSettingsMerger.isOurCommand("'/a/b/supernotch-hook' hook", marker: HookInstallSpec.defaultMarker))
-        #expect(!HookSettingsMerger.isOurCommand("echo supernotch-hook is great", marker: HookInstallSpec.defaultMarker))
+        #expect(
+            !HookSettingsMerger.isOurCommand("echo supernotch-hook is great", marker: HookInstallSpec.defaultMarker))
     }
 
     @Test func claudePathsRespectConfigDir() {
         let home = "/Users/me"
-        #expect(ClaudePaths.resolve(environment: [:], homeDirectory: home).settingsFile == "/Users/me/.claude/settings.json")
+        #expect(
+            ClaudePaths.resolve(environment: [:], homeDirectory: home).settingsFile == "/Users/me/.claude/settings.json"
+        )
         #expect(
             ClaudePaths.resolve(environment: ["CLAUDE_CONFIG_DIR": "~/.claude-work/"], homeDirectory: home).settingsFile
                 == "/Users/me/.claude-work/settings.json")
         #expect(
-            ClaudePaths.resolve(environment: ["CLAUDE_CONFIG_DIR": "/x"], homeDirectory: home, override: "/y").configDirectory
+            ClaudePaths.resolve(environment: ["CLAUDE_CONFIG_DIR": "/x"], homeDirectory: home, override: "/y")
+                .configDirectory
                 == "/y")
-        #expect(ClaudePaths.resolve(environment: ["CLAUDE_CONFIG_DIR": ""], homeDirectory: home).configDirectory == "/Users/me/.claude")
+        #expect(
+            ClaudePaths.resolve(environment: ["CLAUDE_CONFIG_DIR": ""], homeDirectory: home).configDirectory
+                == "/Users/me/.claude")
         #expect(ClaudePaths.projectDirectoryName(forCwd: "/Users/me/my_app.v2") == "-Users-me-my-app-v2")
         #expect(
             ClaudePaths(configDirectory: "/Users/me/.claude").transcriptFile(cwd: "/Users/me/app", sessionID: "abc")
