@@ -693,7 +693,10 @@ Installer rules (`HookSettingsMerger`, pure, tested):
   2. Sends an envelope with `event = "StatusLine"` (non-blocking; rate limits and `session_name`).
   3. With `--wrap`, it **execs** `/bin/sh -c '<original command>'` with the same stdin (a pipe pre-filled with
      the JSON). There is no relaying and no 1 s budget: Claude Code reads the original's stdout and cancels
-     it directly, exactly as without the bridge. If the exec fails it prints nothing.
+     it directly, exactly as without the bridge. If the exec fails it prints nothing. When the JSON is larger
+     than the pipe buffer the hook cannot `exec` before feeding it, so it spawns the shell (stdout inherited,
+     hence passed through unchanged), feeds the rest, waits, and exits with the shell's exit status (128 + the
+     signal number if it was killed): the result is the same as on the exec path.
   4. Without an original command it prints a minimal line, `Model · N% context` (for example
      `Opus 4.7 · 42% context`), so the status line is never blank.
 * **Hook context enrichment:** the hook walks up to 16 parent processes (`proc_pidinfo`/`sysctl` on macOS;
@@ -711,7 +714,7 @@ Installer rules (`HookSettingsMerger`, pure, tested):
 
 | Host | Technique |
 |---|---|
-| Claude desktop | `claude://code/continue?session=<local_id>`, which is undocumented. If `NSWorkspace.open` returns false, activate `com.anthropic.claudefordesktop` |
+| Claude desktop | `claude://claude.ai/epitaxy/<local_id>` (Desktop's own session route, undocumented; `local_id` is validated as `^local_[A-Za-z0-9-]{1,64}$`). `claude://code/continue?session=` is **not** used: it is server-gated and may only open the app (PingIsland's notes). If there is no valid `local_id` or `NSWorkspace.open` returns false, activate `com.anthropic.claudefordesktop` |
 | iTerm2 | AppleScript: select the session whose `unique id` matches `ITERM_SESSION_ID`, otherwise match by tty |
 | Terminal.app | AppleScript: select the tab whose `tty` matches |
 | Ghostty / kitty / WezTerm / tmux | Best effort (`wezterm cli activate-pane`, `kitten @ focus-window`, `tmux select-pane`), then activate the app |
@@ -726,6 +729,13 @@ Automation permission is requested lazily, per host.
 * `ClaudeSessionsModel.usage` shows the latest value (pruned when `resetsAt` passes) and keeps it across
   restarts in `UserDefaults` key `sn.claude.usage` (`SessionStore.restoreUsage` seeds it; live data wins within
   the same window).
+* **Session persistence** (§E.3): on quit the app saves the sessions to
+  `Application Support/SuperNotch/claude-sessions.json` (`ClaudePersistedSessions`: `version`, `savedAt`,
+  `sessions`; mode 0600). On the next start the file is read and then deleted, and `SessionStore.restoreSessions`
+  re-seeds the store together with `restoreUsage`. A file older than 7 days (or of another `version`) is
+  ignored. Only visible sessions that can be re-checked are kept: a live process (`pid`), or a Claude Desktop
+  session (dropped again if Claude.app is not running). Nothing is read or written in smoke-test mode
+  (`SUPERNOTCH_SMOKE_TEST=1`, §D.10).
 * Views: `UsageBarsView` with two 3 pt bars, labelled "5h" and "7d", showing the percentage and the reset
   time on hover. It turns orange at the threshold and red at ≥ 95 %.
 
@@ -935,22 +945,29 @@ Other rules:
   against PID reuse) gives `processExited`. A removed `<config>/sessions/<pid>.json` (undocumented;
   `DispatchSource` vnode watcher) is a second exit hint, confirmed with `kill(pid, 0)`. After sleep or screen
   unlock the app re-checks every pid once.
-* **Desktop sessions without a pid:** liveness follows `com.anthropic.claudefordesktop` running. If it quits,
-  the app sends `SessionEvent.sessionEnded` for each of them (removed, never parked).
-* **Drift correction is a slow fallback**, only while a visible session is 🟡 or 🔴: a `.tick` every 60 s, and
-  `claude agents --json --all` only when such a session has been silent for ≥ 60 s (backoff up to 5 min).
+* **Desktop sessions without a pid:** liveness follows `com.anthropic.claudefordesktop` running. When Claude.app
+  quits, the app sends `SessionEvent.sessionEnded` for each of them (removed, never parked).
+* **`.tick`:** the app sends `SessionEvent.tick` about every 30 s while any session exists (stale flag, parked
+  and hidden expiry, title grace, tombstones). The timer is paused while the Mac sleeps or the screen is locked
+  and starts again on wake or unlock; it is independent of the drift correction below, so 🟢-only sessions
+  expire on time too.
+* **`claude agents --json --all` runs at three moments:**
+  1. once about 3 s after launch, to adopt sessions that were started before SuperNotch;
+  2. after wake / unlock (the poll interval is reset);
+  3. as the **drift-correction fallback**, only while a visible session is 🟡 or 🔴 and has been silent for
+     ≥ 60 s (backoff from 60 s up to 5 min).
   * It runs the session's own `claudeInvocation` / `claudeExecutablePath` (never a bare `claude`: the app runs
     under launchd's PATH) with `SUPERNOTCH_INTERNAL=1` and a 5 s timeout, and gives up after 3 consecutive
     failures (the CLI is too old: log it and keep hooks-only).
-  * It is paused while the Mac sleeps or the screen is locked, and the app filters headless pids
-    (`ClaudeProcess`) out of a snapshot before it can be adopted.
-* The store needs a `.tick` at least every minute while any session exists (stale flag, parked and hidden
-  expiry). The app currently drives ticks from the drift timer above, so 🟢-only sessions are expired at the
-  next 🟡/🔴 tick.
+  * It is paused while the Mac sleeps or the screen is locked.
+* **Headless and internal processes are filtered before adoption.** For every pid in an `agents` snapshot the
+  app reads the process arguments and environment (`KERN_PROCARGS2` via `sysctl`) and builds a `HookContext`
+  from them; a process with `HookContext.isHeadless` (or `isInternal` / `isRemote`, §E.2) is dropped before
+  `SessionEvent.agentsSnapshot` can adopt it, exactly as the hook path would have classified it.
 * **Persistence (Core support):** `Session` is `Codable`, and `restoreSessions` / `restoreUsage` re-seed a
-  fresh store at launch (usage lives in `UserDefaults` key `sn.claude.usage`, §D.9). Restored sessions carry
-  no pending cards (their hook connections died with the old process); liveness and `claude agents` correct
-  anything stale.
+  fresh store at launch (the sessions file and `UserDefaults` key `sn.claude.usage`, §D.9). Restored sessions
+  carry no pending cards (their hook connections died with the old process); liveness and `claude agents`
+  correct anything stale.
 
 ### E.4 Title resolution
 
@@ -1016,7 +1033,13 @@ nonisolated enum Log {
 * Use `Log.claude.debug("…")`, and `privacy: .public` only for non-personal values.
 * Never log prompts, file contents or clipboard contents.
 * Core has no logging. It returns errors or values.
-* The hook logs to `~/Library/Logs/SuperNotch/hook.log` only when `SUPERNOTCH_HOOK_DEBUG=1`.
+* The hook logs to `~/Library/Logs/SuperNotch/hook.log` and to stderr (Claude Code keeps a hook's
+  stderr in its debug log) only when `SUPERNOTCH_HOOK_DEBUG=1`. Every fail-open path names its reason
+  (errno for stat/connect/send/read, timeouts, EOF, malformed reply).
+* Stack budget: on macOS, GCD and Swift-concurrency worker threads get 512 KB of stack (Linux: 8 MB).
+  Recursive code on those threads must be bounded accordingly; `JSONValue.maxNestingDepth` is 64 so
+  the full hook → app pipeline (parse, compact, encode/decode) stays under 256 KB even in debug builds.
+  `IPCTests` runs that pipeline on a 512 KB thread so Linux catches regressions.
 
 ### F.3 Error handling
 
@@ -1107,7 +1130,7 @@ nonisolated enum Log {
 
 | Stream | Must test |
 |---|---|
-| claude-core | State machine sequences through a fixture-replay harness (`Fixtures/claude/seq-*.jsonl`, one sequence per known bug): #98 late PostToolUse vs a main-thread PreToolUse revive, interrupt marker, permission resolution by `tool_use_id`, PostToolUse and PermissionDenied, stale-card clearing, AskUserQuestion, subagent cards and counter, Desktop pre-warm and parking, agents adoption and grace, host-first visibility (Desktop / VS Code with `-p`, Cowork hidden), hidden internal/headless. Also: the settings merger (idempotent; refuses invalid JSON; keeps key order and unknown keys; version gate; no SessionEnd timeout; uninstall; statusLine wrap/unwrap), titles and Haiku timing, the transcript tail, agents decoding, NDJSON framing, decision JSON, and the real `supernotch-hook` binary (fail-open: no socket → exit 0, empty stdout; `statusline --wrap` exec; the default status line) |
+| claude-core | State machine sequences through a fixture-replay harness (`Fixtures/claude/seq-*.jsonl`, one sequence per known bug): #98 late PostToolUse vs a main-thread PreToolUse revive, interrupt marker, permission resolution by `tool_use_id`, PostToolUse and PermissionDenied, stale-card clearing, AskUserQuestion, subagent cards and counter, Desktop pre-warm and parking, agents adoption and grace, host-first visibility (Desktop / VS Code with `-p`, Cowork hidden), hidden internal/headless. Also: the settings merger (idempotent; refuses invalid JSON; keeps key order and unknown keys; version gate; no SessionEnd timeout; uninstall; statusLine wrap/unwrap), titles and Haiku timing, the transcript tail, agents decoding, NDJSON framing, decision JSON, and the real `supernotch-hook` binary (fail-open: no socket → exit 0, empty stdout; `statusline --wrap` exec, including large input and the wrapped command's exit status; the default status line) |
 | notch-shell | `NotchGeometry` (14″/16″ fixtures, nil aux areas), `HoverIntent` (dwell, grace, slack), `PopupPolicy` (fullscreen, focus-aware, expanded queueing) |
 | media | `SpotifyScriptParser` (normal, ad, episode, local file, not running), `PlaybackSnapshot.position(at:)` |
 | shelf-clipboard | `RetentionPolicy` (pinned never expire, off, boundaries), `ClipboardCaptureFilter` (concealed, transient, own marker, ignored apps), dedupe/limit |
