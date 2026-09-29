@@ -153,6 +153,10 @@ enum DesignTokens {
 
     // MARK: - Glass look (§A.3)
 
+    /// Alias kept for code written against an early draft of SPEC §D.10 (`DesignTokens.Glass.…`).
+    /// Inside `DesignTokens` write `SwiftUI.Glass` for the SwiftUI material type.
+    typealias Glass = GlassLook
+
     enum GlassLook {
         /// Black at the top (merges into the hardware notch) fading to clear at ~65 % of the shape height.
         /// Use as the content's `.background` inside the glass shape of peek/expanded.
@@ -170,8 +174,13 @@ enum DesignTokens {
 
         /// `.glassEffect(DesignTokens.GlassLook.glass(style:reduceTransparency:), in: shape)`: switch glass
         /// on and off with `.identity`, never by adding/removing the modifier.
-        static func glass(style: NotchStyle, reduceTransparency: Bool) -> Glass {
-            style.usesGlass(reduceTransparency: reduceTransparency) ? .regular : .identity
+        static func glass(style: NotchStyle, reduceTransparency: Bool) -> SwiftUI.Glass {
+            usesGlass(style: style, reduceTransparency: reduceTransparency) ? .regular : .identity
+        }
+
+        /// Whether peek/expanded use real glass (`NotchStyle.usesGlass(reduceTransparency:)`).
+        static func usesGlass(style: NotchStyle, reduceTransparency: Bool) -> Bool {
+            style.usesGlass(reduceTransparency: reduceTransparency)
         }
 
         /// Fill behind the content when glass is off (solid-black style, Reduce Transparency, closed state).

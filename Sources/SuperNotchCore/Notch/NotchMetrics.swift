@@ -64,18 +64,30 @@ public enum NotchMetrics {
     /// Content fades in this long after the shape starts to open (§A.2).
     public static let contentFadeInDelay: Double = 0.06
 
-    // MARK: Closed-state wings (§A.2)
+    // MARK: Closed-state wings (§A.2). Single source of truth for the closed shape's width.
 
-    /// Total extra width of the closed shape (symmetric, top-centred) for `NotchGeometry.size(for:closedWidthExtra:)`.
-    /// - island mode with something to show (a loaded track or an active Claude session): 2 × `islandWingWidth`;
-    /// - otherwise, while the usage warning is showing: 2 × `warningWingWidth` (the dot sits in the right wing);
-    /// - otherwise 0 (looks exactly like the hardware notch).
+    /// Extra width left and right of the physical notch while closed:
+    /// - island mode with something to show: `islandWingWidth` on both sides (artwork left, visualizer/dots right);
+    /// - otherwise, while the usage warning shows: `warningWingWidth` on the **right** only (the orange dot);
+    /// - otherwise none (looks exactly like the hardware notch).
+    /// The shape is asymmetric in the warning case: its centre sits `(trailing - leading) / 2` right of the
+    /// notch centre (`NotchClosedWings.centerOffset`). The physical notch never moves.
+    /// - Parameter hasIslandContent: a track is playing, or a Claude session is 🟡 working or 🔴 needs you
+    ///   (see `NotchSlots.hasIslandContent` in the app).
+    public static func closedWings(
+        mode: ClosedNotchMode, hasIslandContent: Bool, showsUsageWarning: Bool
+    ) -> (leading: CGFloat, trailing: CGFloat) {
+        if mode == .island && hasIslandContent { return (islandWingWidth, islandWingWidth) }
+        if showsUsageWarning { return (0, warningWingWidth) }
+        return (0, 0)
+    }
+
+    /// Total closed wing width (`leading + trailing`), for `NotchGeometry.size(for:closedWidthExtra:)`.
     public static func closedWidthExtra(
-        mode: ClosedNotchMode, hasTrack: Bool, hasActiveSessions: Bool, showsUsageWarning: Bool
+        mode: ClosedNotchMode, hasIslandContent: Bool, showsUsageWarning: Bool
     ) -> CGFloat {
-        if mode == .island, hasTrack || hasActiveSessions { return 2 * islandWingWidth }
-        if showsUsageWarning { return 2 * warningWingWidth }
-        return 0
+        let wings = closedWings(mode: mode, hasIslandContent: hasIslandContent, showsUsageWarning: showsUsageWarning)
+        return wings.leading + wings.trailing
     }
 
     // MARK: Glass look (§A.3)

@@ -48,35 +48,36 @@ struct FoundationNotchMetricsTests {
     }
 
     @Test(arguments: [ClosedNotchMode.invisible, .island])
-    func closedWidthWithoutContentIsTheBareNotch(mode: ClosedNotchMode) {
-        #expect(
-            NotchMetrics.closedWidthExtra(
-                mode: mode, hasTrack: false, hasActiveSessions: false, showsUsageWarning: false) == 0)
+    func closedWithoutContentIsTheBareNotch(mode: ClosedNotchMode) {
+        let wings = NotchMetrics.closedWings(mode: mode, hasIslandContent: false, showsUsageWarning: false)
+        #expect(wings.leading == 0 && wings.trailing == 0)
+        #expect(NotchMetrics.closedWidthExtra(mode: mode, hasIslandContent: false, showsUsageWarning: false) == 0)
     }
 
-    @Test func closedWidthIsland() {
-        let full = 2 * NotchMetrics.islandWingWidth
+    @Test func islandWithContentHasBothWings() {
+        for warning in [false, true] {
+            let wings = NotchMetrics.closedWings(mode: .island, hasIslandContent: true, showsUsageWarning: warning)
+            #expect(wings.leading == NotchMetrics.islandWingWidth)
+            #expect(wings.trailing == NotchMetrics.islandWingWidth)
+        }
         #expect(
-            NotchMetrics.closedWidthExtra(
-                mode: .island, hasTrack: true, hasActiveSessions: false, showsUsageWarning: false) == full)
-        #expect(
-            NotchMetrics.closedWidthExtra(
-                mode: .island, hasTrack: false, hasActiveSessions: true, showsUsageWarning: true) == full)
-        // Island with only a usage warning looks like invisible mode + warning wing.
-        #expect(
-            NotchMetrics.closedWidthExtra(
-                mode: .island, hasTrack: false, hasActiveSessions: false, showsUsageWarning: true)
-                == 2 * NotchMetrics.warningWingWidth)
+            NotchMetrics.closedWidthExtra(mode: .island, hasIslandContent: true, showsUsageWarning: false)
+                == 2 * NotchMetrics.islandWingWidth)
     }
 
-    @Test func closedWidthInvisibleIgnoresMediaAndSessions() {
+    @Test(arguments: [ClosedNotchMode.invisible, .island])
+    func usageWarningAloneAddsOnlyARightWing(mode: ClosedNotchMode) {
+        let wings = NotchMetrics.closedWings(mode: mode, hasIslandContent: false, showsUsageWarning: true)
+        #expect(wings.leading == 0)
+        #expect(wings.trailing == NotchMetrics.warningWingWidth)
         #expect(
-            NotchMetrics.closedWidthExtra(
-                mode: .invisible, hasTrack: true, hasActiveSessions: true, showsUsageWarning: false) == 0)
-        #expect(
-            NotchMetrics.closedWidthExtra(
-                mode: .invisible, hasTrack: true, hasActiveSessions: true, showsUsageWarning: true)
-                == 2 * NotchMetrics.warningWingWidth)
+            NotchMetrics.closedWidthExtra(mode: mode, hasIslandContent: false, showsUsageWarning: true)
+                == NotchMetrics.warningWingWidth)
+    }
+
+    @Test func invisibleModeIgnoresIslandContent() {
+        let wings = NotchMetrics.closedWings(mode: .invisible, hasIslandContent: true, showsUsageWarning: false)
+        #expect(wings.leading == 0 && wings.trailing == 0)
     }
 
     @Test func glassGradientStopsFollowTheNotchHeight() {

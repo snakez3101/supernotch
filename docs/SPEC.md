@@ -1,6 +1,6 @@
 # SuperNotch: binding specification (v1)
 
-Status: **binding contract** for the five implementation streams. Written by the foundation (lead architect).
+Status: **binding contract** for the implementation streams. Written by the foundation (lead architect).
 Inputs: `docs/REQUIREMENTS.md` (wins on conflicts) and `docs/RESEARCH.md` (baseline architecture).
 
 Rules for everyone:
@@ -41,7 +41,7 @@ timer, webcam, downloads, weather, Apple Music, generic now-playing, and sounds.
 | Presentation | When | Size (points; N = physical notch size) |
 |---|---|---|
 | closed, **invisible** mode | default idle | exactly N (black). If usage ≥ threshold, adds a 14 pt right wing with a 5 pt orange dot |
-| closed, **island** mode | idle, and Spotify has a track or a Claude session is active | width N.w + 2 × 36 (left wing: 22 pt artwork, corner radius 5; right wing: fake visualizer of 4 bars, 14 pt tall, and/or Claude dots of 6 pt with 3 pt spacing, up to 4, plus a usage-warning dot). With nothing to show, it looks like invisible mode |
+| closed, **island** mode | idle, and a Spotify track is **playing** or a Claude session is 🟡/🔴 (§D.10) | width N.w + 2 × 36 (left wing: 22 pt artwork, corner radius 5; right wing: fake visualizer of 4 bars, 14 pt tall, and/or Claude dots of 6 pt with 3 pt spacing, up to 4, plus a usage-warning dot). With nothing to show, it looks like invisible mode |
 | peek (auto popup) | Claude session done or needs input | 420 × (N.h + 64) |
 | peek (permission) | pending PermissionRequest | 480 × (N.h + 128) |
 | expanded | hover, click, hotkey, file drag | **540 × (N.h + 156)**. This is intentionally compact; do not grow it. Streams design to these numbers |
@@ -120,7 +120,11 @@ Animations:
   with the last 5 clipboard entries underneath.
 * **Drag into the notch:** while a file drag is near the notch, the expanded notch switches to the Shelf
   tab and shows two drop zones side by side: "Shelf" and "AirDrop" (`DropZonesView`). Dropping on AirDrop
-  opens the AirDrop picker straight away.
+  opens the AirDrop picker straight away. **Owner: shelf-clipboard.** Its drag detector (global
+  `leftMouseDragged` monitor + `NSPasteboard(name: .drag)`) sets `ShelfModel.isDragActive`, calls
+  `notch.open(tab: .shelf)` and holds a `NotchHoldToken` while the drag is near the notch. notch-shell only
+  guarantees that the panel accepts the drop (mouse events enabled) over the expanded shape while
+  `isDragActive` is true.
 * **Gear:** opens the Settings window.
 
 ### A.6 Auto-popups (peeks)
@@ -385,10 +389,10 @@ public struct PopupRequest: Sendable, Hashable, Identifiable {
     public var autoDismissAfter: TimeInterval? // e.g. 4 s for 🟢
     public var createdAt: Date
 }
-public struct PopupContext: Sendable {         // world state the policy looks at
+public struct PopupContext: Sendable {         // world state the policy looks at (+ memberwise init, see file)
     public var isFullscreen, isExpanded, isNotchAvailable: Bool
     public var frontmostAppBundleID: String?
-    public var popupsForNeedsInput, popupsForDone, skipDoneWhenHostFrontmost: Bool
+    public var popupsForNeedsInput, popupsForDone, skipDoneWhenHostFrontmost, hideInFullscreen: Bool
 }
 public enum PopupDecision: Sendable, Equatable { case show, queue, suppress }
 public enum PopupPolicy { public static func decide(_ request: PopupRequest, context: PopupContext) -> PopupDecision }
@@ -450,6 +454,8 @@ func toggle()
 func present(_ request: PopupRequest)            // runs PopupPolicy; show / queue / suppress
 func withdraw(popupID: String)                   // remove a shown or queued popup
 func holdOpen(reason: String) -> NotchHoldToken  // token.release(); also released on deinit
+// NotchHoldToken (notch-shell, Notch/NotchHoldToken.swift): `final class` (nonisolated, Sendable);
+// `release()` is idempotent and non-mutating, so `let token` properties work; dropping the token releases it.
 func openSettings()                              // shows the Settings window (calls the handler below)
 var openSettingsHandler: (() -> Void)?           // set by AppDelegate
 ```
@@ -516,7 +522,7 @@ func imageURL(for entry: ClipboardEntry) -> URL?
 | `MediaIslandVisualizer()` | media | closed island, right wing (≤ 20 × 14; animates only while playing) |
 | `MediaSettingsSection()`, `OnboardingSpotifyStep()` | media | Settings / onboarding |
 | `ClaudeHomeSection()` | claude-app | `HomeTabView` (right column) |
-| `ClaudeIslandIndicator()` | claude-app | closed island + invisible-mode right wing (dots + usage warning) |
+| `ClaudeIslandIndicator()` | claude-app | closed island right wing while Claude is 🟡/🔴 (dots + usage-warning dot); other closed cases: §D.10 |
 | `ClaudePeekView(sessionID: String)` | claude-app | peek for `.claudeSession` |
 | `PermissionCardView(requestID: String)` | claude-app | peek for `.claudePermission` |
 | `ClaudeSettingsSection()`, `OnboardingHooksStep()` | claude-app | Settings / onboarding |
@@ -675,12 +681,13 @@ are real code; read them for details.
 }   // called synchronously after each real change; keep the token (cancel() or dropping it ends the observation)
 
 nonisolated enum Log { … }                             // §F.2 categories + `system`
-enum NotchSlots { … }                                  // §D.5 (+ closedWidthExtra helper, see below)
+enum NotchSlots { … }                                  // §D.5 (+ closedWings / closedWidthExtra / hasIslandContent)
 enum DesignTokens { … }                                // Shared/DesignTokens.swift: colours, fonts, spacing, glass gradient
 struct HomeTabView: View { init() }
 ```
 
-Core additions (FOUNDATION files, tested): `NotchMetrics.contentFadeInDelay`, `NotchMetrics.closedWidthExtra(…)`,
+Core additions (FOUNDATION files, tested): `NotchMetrics.contentFadeInDelay`, `NotchMetrics.closedWings(…)` /
+`NotchMetrics.closedWidthExtra(…)`,
 `NotchMetrics.glassGradientStops(…)`, `NotchStyle.usesGlass(reduceTransparency:)`,
 `AppSettings.clipboardLimitRange` (50…1000, §A.10; `normalize()` clamps to it) and
 `AppSettings.resetToDefaults()`.
@@ -720,16 +727,23 @@ Lifecycle and windows (implemented in `App/AppDelegate.swift`):
 
 **Slot composition rules** (`Shared/NotchSlots.swift`, `Shared/HomeTabView.swift`):
 
-* `NotchSlots.islandLeading()`: `MediaIslandArtwork()` in island mode while a track is loaded, else nothing.
-* `NotchSlots.islandTrailing()`: island mode: `MediaIslandVisualizer()` (only while a track is loaded,
-  `showVisualizer` is on and no Claude session is active; the dots win the 36 pt wing) followed by
-  `ClaudeIslandIndicator()`; invisible mode: `ClaudeIslandIndicator()` only. `ClaudeIslandIndicator` reads
-  `settings.closedMode` itself and, in invisible mode, draws only the usage-warning dot (or nothing).
+* **Island content** (`NotchSlots.hasIslandContent(settings:media:claude:)`): a Spotify track is **playing**
+  (`spotifyEnabled && hasTrack && isPlaying`), or Claude is active: `claudeEnabled` and
+  `aggregateLight` is 🟡 or 🔴. Paused tracks and 🟢/idle sessions do not keep the island open (🟢 is announced by
+  its peek); this keeps the closed notch compact.
+* **Closed wings: one rule** — `NotchMetrics.closedWings(mode:hasIslandContent:showsUsageWarning:)` (Core,
+  tested) returns `(leading, trailing)`: island mode with content ⇒ 36 / 36; otherwise usage warning ⇒
+  0 / 14 (**right wing only**; the shape's centre moves `(trailing − leading) / 2` to the right, the physical
+  notch never moves); else 0 / 0. `NotchSlots.closedWings(settings:media:claude:)` feeds it from the models and
+  `NotchSlots.closedWidthExtra(…)` is the sum. notch-shell's `NotchClosedWings.resolve(…)` must return exactly
+  these values (ideally by calling `NotchMetrics.closedWings`).
+* `NotchSlots.islandLeading()`: `MediaIslandArtwork()` in island mode while a track is playing, else nothing.
+* `NotchSlots.islandTrailing()`:
+  * island mode and Claude active ⇒ `ClaudeIslandIndicator()` (session dots + its own usage-warning dot);
+  * island mode otherwise (a track is playing) ⇒ `MediaIslandVisualizer()` (if `showVisualizer`) + the
+    usage-warning dot (drawn by `NotchSlots`) when needed;
+  * no island content or invisible mode ⇒ only the usage-warning dot (drawn by `NotchSlots`), or nothing.
   Slot views size themselves (≤ wing width) and render nothing when they have nothing to show.
-* `NotchSlots.closedWidthExtra(settings:media:claude:)` (backed by the pure, tested
-  `NotchMetrics.closedWidthExtra(mode:hasTrack:hasActiveSessions:showsUsageWarning:)`) gives the shell the
-  `closedWidthExtra` for `NotchGeometry.size(for:closedWidthExtra:)`: island with content ⇒ 2 × 36;
-  otherwise usage warning ⇒ 2 × 14 (symmetric shape, the dot sits in the right wing); else 0.
 * `NotchSlots.tab(_:)` / `NotchSlots.peek(_:)` fill the area the shell gives them below the top band
   (height N.h). The shell draws the tab icons and the gear in the top band and insets the slot area by
   `NotchMetrics.contentPadding` on the left, right and bottom, so slot views add no outer padding of their
@@ -739,11 +753,19 @@ Lifecycle and windows (implemented in `App/AppDelegate.swift`):
   session rows **and** `UsageBarsView` at its bottom (§A.5 diagram). `HomeTabView` does not add
   `UsageBarsView` itself. If `spotifyEnabled` is off the Claude column takes the full width; if `claudeEnabled`
   is off the music column stays 200 pt and the rest shows a hint. The overall size never changes.
+* Smoke test (`App/SmokeTest.swift`, §G.2): `SuperNotch --smoke-test` exits 0 within a few seconds (watchdog
+  25 s; `package_app.sh` allows 30 s), shows no window or dialog, and never touches `~/.claude`. It sets
+  `SUPERNOTCH_SMOKE_TEST=1`, `SUPERNOTCH_SOCKET` and `CLAUDE_CONFIG_DIR` (+ `claudeConfigDirOverride`) to temp
+  paths, uses an isolated `UserDefaults` suite, renders every §D.5 view off-screen, then starts/stops all models
+  and `NotchWindowController` with `spotifyEnabled` and `clipboardEnabled` off. Models must not show dialogs
+  or write outside Application Support / temp while `SUPERNOTCH_SMOKE_TEST=1`.
 * Glass look (§A.3): `DesignTokens.GlassLook.gradient(notchHeight:shapeHeight:)` is the black→clear
   `LinearGradient` (stops from the pure `NotchMetrics.glassGradientStops(notchHeight:shapeHeight:)`), and
   `DesignTokens.GlassLook.glass(style:reduceTransparency:)` returns `.regular` or `.identity` for
-  `.glassEffect(_:in:)` (pure rule: `NotchStyle.usesGlass(reduceTransparency:)`). Animations:
-  `DesignTokens.Motion.open` / `.close` / `.contentFadeIn` (§A.2).
+  `.glassEffect(_:in:)` (pure rule: `NotchStyle.usesGlass(reduceTransparency:)`;
+  `DesignTokens.GlassLook.usesGlass(style:reduceTransparency:)` returns the Bool). `DesignTokens.Glass` is a
+  typealias of `GlassLook` (early-draft name); inside `DesignTokens` the SwiftUI type is `SwiftUI.Glass`.
+  Animations: `DesignTokens.Motion.open` / `.close` / `.contentFadeIn` (§A.2).
 
 ---
 
@@ -915,7 +937,8 @@ nonisolated enum Log {
 8. **`NSPanel` subclass:** override `canBecomeKey` / `canBecomeMain` as `override var … : Bool { … }`. Use
    `NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 3)` for the level.
 9. **`NSHostingView` subclass:** `required init(rootView:)` must be declared when subclassing, as
-   `override required init(rootView: Content)`, and `required init?(coder:)` must be declared too.
+   `required init(rootView: Content)` (`override` is implied and only produces a warning), and
+   `required init?(coder:)` must be declared too.
 10. **AppleScript:** `NSAppleScript.executeAndReturnError(_:)` takes an
     `AutoreleasingUnsafeMutablePointer<NSDictionary?>?`. Declare `var error: NSDictionary?` and pass
     `&error`. `NSAppleScript` is not `Sendable`: create it and use it on the same serial queue.

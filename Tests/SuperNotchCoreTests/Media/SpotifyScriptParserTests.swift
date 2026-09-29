@@ -84,11 +84,20 @@ struct SpotifyScriptParserTests {
         #expect(snapshot.volume == 72)
     }
 
-    @Test func thousandsSeparatedNumberFallsBackToZero() throws {
+    @Test func numbersWithGroupingAndDecimalSeparators() throws {
         let snapshot = try #require(
             SpotifyScriptParser.parse(try MediaFixtures.status("status-bad-number"), now: now))
-        #expect(snapshot.positionSeconds == 0)
+        #expect(snapshot.positionSeconds == 1234.5)  // "1.234,5"
         #expect(snapshot.track?.title == "Lied")
+        #expect(SpotifyScriptParser.number("1,234.5") == 1234.5)
+        #expect(SpotifyScriptParser.number("12,5") == 12.5)
+        #expect(SpotifyScriptParser.number("1,5E+2") == 150)
+        #expect(SpotifyScriptParser.number("  7 ") == 7)
+        #expect(SpotifyScriptParser.number("1.2.3") == nil)
+        #expect(SpotifyScriptParser.number("abc") == nil)
+        #expect(SpotifyScriptParser.number("") == nil)
+        #expect(SpotifyScriptParser.number("nan") == nil)
+        #expect(SpotifyScriptParser.number("-inf") == nil)
     }
 
     @Test func rawEnumCodes() throws {

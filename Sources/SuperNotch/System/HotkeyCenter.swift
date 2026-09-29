@@ -8,6 +8,7 @@
 import AppKit
 import Carbon.HIToolbox
 import SuperNotchCore
+import os
 
 /// The app's global shortcuts (SPEC §A.4). Raw values double as Carbon hotkey ids.
 enum HotkeyAction: UInt32, CaseIterable, Hashable {
@@ -64,9 +65,8 @@ final class HotkeyCenter {
             return false
         }
         registrations[action.rawValue] = Registration(combo: combo, ref: ref, handler: handler)
-        Log.system.info(
-            "Registered hotkey \(combo.description, privacy: .public) for \(String(describing: action), privacy: .public)"
-        )
+        let name = String(describing: action)
+        Log.system.info("Registered hotkey \(combo.description, privacy: .public) for \(name, privacy: .public)")
         return true
     }
 

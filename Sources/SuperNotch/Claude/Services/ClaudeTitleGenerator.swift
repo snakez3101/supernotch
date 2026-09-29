@@ -151,7 +151,7 @@ final class ClaudeTitleGenerator {
                 let output = ClaudeProcessRunner.runSync(
                     executable: executable, arguments: arguments,
                     environment: environment.environment(
-                        homeDirectory: homeDirectory, configDirectory: configDirectory),
+                        homeDirectory: homeDirectory, configDirectory: configDirectory, purpose: .title),
                     currentDirectory: workDirectory, timeout: 20, maxOutputBytes: 16 * 1024),
                 output.succeeded
             else { return nil }

@@ -10,6 +10,8 @@ import Foundation
 //   `closeDelay` → `.close`. Coming back inside during the grace cancels the close.
 // * An open that did not start under the pointer (hotkey, auto popup, click elsewhere) is "unarmed": it never
 //   closes by hover until the pointer has entered the open region once. `reset(isOpen:pointerInside:)`.
+// * A close that happens while the pointer is still over the notch (Esc, hotkey, click on a control) does not
+//   re-open by dwell until the pointer has left the trigger once.
 
 public struct HoverIntent: Sendable, Hashable {
     public enum Action: Sendable, Hashable {
@@ -29,6 +31,8 @@ public struct HoverIntent: Sendable, Hashable {
     private(set) public var leftAt: Date?
     /// While open: true once the pointer has been inside the open region (hover-leave may close).
     private(set) public var isArmedForClose: Bool = true
+    /// While closed: false after a close under the pointer, until the pointer leaves the trigger.
+    private(set) public var isArmedForOpen: Bool = true
 
     public init(openDelay: TimeInterval, closeDelay: TimeInterval) {
         self.openDelay = max(openDelay, 0)
@@ -55,12 +59,14 @@ public struct HoverIntent: Sendable, Hashable {
         }
         leftAt = nil
         if inTrigger {
+            guard isArmedForOpen else { return .none }
             if enteredAt == nil {
                 enteredAt = now
                 return openDelay <= 0 ? open() : .schedule(at: now.addingTimeInterval(openDelay))
             }
             return .none
         }
+        isArmedForOpen = true
         enteredAt = nil
         return .none
     }
@@ -87,11 +93,15 @@ public struct HoverIntent: Sendable, Hashable {
     }
 
     /// Reset after an externally caused open/close.
-    /// - Parameter pointerInside: false for opens that did not happen under the pointer (hotkey, auto popup):
-    ///   they only close by hover after the pointer has visited the open region once.
+    /// - Parameter pointerInside: whether the pointer is over the notch right now.
+    ///   * open: false for opens that did not happen under the pointer (hotkey, auto popup); they only close by
+    ///     hover after the pointer has visited the open region once;
+    ///   * closed: true when the pointer is still over the trigger; dwelling there does not re-open until the
+    ///     pointer has left once.
     public mutating func reset(isOpen: Bool, pointerInside: Bool) {
         self.isOpen = isOpen
         isArmedForClose = isOpen ? pointerInside : true
+        isArmedForOpen = isOpen ? true : !pointerInside
         enteredAt = nil
         leftAt = nil
     }
@@ -102,6 +112,7 @@ public struct HoverIntent: Sendable, Hashable {
             guard isArmedForClose, let leftAt else { return nil }
             return leftAt.addingTimeInterval(closeDelay)
         }
+        guard isArmedForOpen else { return nil }
         return enteredAt.map { $0.addingTimeInterval(openDelay) }
     }
 

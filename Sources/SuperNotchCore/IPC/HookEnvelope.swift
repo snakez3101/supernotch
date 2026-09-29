@@ -44,13 +44,34 @@ public struct HookEventName: RawRepresentable, Hashable, Sendable, Codable, Cust
     ]
 
     /// Newer events, installed only when `claude --version` >= `extendedEventsMinimumVersion`.
-    /// Unknown event keys can make older Claude Code versions reject settings.json (claude-island #85).
     public static let extendedEvents: [HookEventName] = [
         .postToolUseFailure, .permissionDenied, .stopFailure, .subagentStart, .postCompact,
     ]
 
-    /// Conservative gate for `extendedEvents` (unverified exact introduction versions; all exist in 2.1.x).
-    public static let extendedEventsMinimumVersion = "2.1.0"
+    /// Before Claude Code 2.1.101 one unrecognized hook event name made it ignore the WHOLE settings.json
+    /// (CHANGELOG 2.1.101). PostCompact (2.1.76), StopFailure (2.1.78) and PermissionDenied (2.1.89) are newer
+    /// than many 2.1.x installs, so the extended set is only written from 2.1.101 on, where unknown names are
+    /// skipped harmlessly.
+    public static let extendedEventsMinimumVersion = "2.1.101"
+
+    /// First Claude Code version that knows this event (CHANGELOG), nil = present in every supported version.
+    /// Used to drop base events a very old CLI would not recognise.
+    public var minimumVersion: String? {
+        switch self {
+        case .permissionRequest: return "2.0.45"
+        case .subagentStart: return "2.0.43"
+        case .sessionEnd: return "1.0.85"
+        case .sessionStart: return "1.0.62"
+        case .userPromptSubmit: return "1.0.54"
+        case .preCompact: return "1.0.48"
+        case .subagentStop: return "1.0.41"
+        case .postCompact: return "2.1.76"
+        case .stopFailure: return "2.1.78"
+        case .permissionDenied: return "2.1.89"
+        case .postToolUseFailure: return HookEventName.extendedEventsMinimumVersion
+        default: return nil
+        }
+    }
 
     /// Whether the event supports a `matcher` (we then write `"matcher": "*"`).
     public var supportsMatcher: Bool {
@@ -97,6 +118,16 @@ public struct HookContext: Codable, Sendable, Hashable {
     public var isPrintMode: Bool  // claude argv contains -p / --print
     public var isInternal: Bool  // SUPERNOTCH_INTERNAL=1
     public var isRemote: Bool  // CLAUDE_CODE_REMOTE=true (cloud VM; never expected locally)
+    /// argv prefix that runs this Claude Code install, e.g. `["/Users/me/.local/share/claude/versions/2.1.284"]`
+    /// or `["/opt/homebrew/bin/node", "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js"]`.
+    /// Append `agents --json --all` / `-p …`. The app runs under launchd's PATH, so never rely on "claude".
+    public var claudeInvocation: [String]?
+    /// Ancestors of the hook, nearest first (the hook's shell, claude, the user's shell, the terminal app…),
+    /// up to launchd. Lets the focuser find the exact GUI process hosting the session.
+    public var processChain: [HookProcessEntry]?
+    /// Enclosing `.app` bundle of the nearest GUI ancestor above claude (e.g. "/Applications/iTerm.app",
+    /// "/Applications/Cursor.app"), or derived from VS Code's askpass helper path.
+    public var hostAppPath: String?
 
     public init(
         hookVersion: String = "0",
@@ -119,7 +150,10 @@ public struct HookContext: Codable, Sendable, Hashable {
         claudeConfigDir: String? = nil,
         isPrintMode: Bool = false,
         isInternal: Bool = false,
-        isRemote: Bool = false
+        isRemote: Bool = false,
+        claudeInvocation: [String]? = nil,
+        processChain: [HookProcessEntry]? = nil,
+        hostAppPath: String? = nil
     ) {
         self.hookVersion = hookVersion
         self.claudePID = claudePID
@@ -142,6 +176,9 @@ public struct HookContext: Codable, Sendable, Hashable {
         self.isPrintMode = isPrintMode
         self.isInternal = isInternal
         self.isRemote = isRemote
+        self.claudeInvocation = claudeInvocation
+        self.processChain = processChain
+        self.hostAppPath = hostAppPath
     }
 
     /// Fills every environment-derived field. Process-derived fields (PID, tty, exec path, print mode)
@@ -167,8 +204,16 @@ public struct HookContext: Codable, Sendable, Hashable {
             hostSessionID: value("CLAUDE_CODE_HOST_SESSION_ID"),
             claudeConfigDir: value("CLAUDE_CONFIG_DIR"),
             isInternal: Self.isTruthy(value(IPCConfig.internalMarkerEnvironmentKey)),
-            isRemote: Self.isTruthy(value("CLAUDE_CODE_REMOTE"))
+            isRemote: Self.isTruthy(value("CLAUDE_CODE_REMOTE")),
+            hostAppPath: Self.appBundlePath(in: value("VSCODE_GIT_ASKPASS_NODE") ?? value("VSCODE_GIT_ASKPASS_MAIN"))
         )
+    }
+
+    /// "/Applications/Cursor.app/Contents/Frameworks/…" → "/Applications/Cursor.app" (outermost bundle).
+    public static func appBundlePath(in path: String?) -> String? {
+        guard let path, let range = path.range(of: ".app/") else { return nil }
+        let bundle = String(path[..<range.lowerBound]) + ".app"
+        return bundle.hasPrefix("/") ? bundle : nil
     }
 
     static func isTruthy(_ value: String?) -> Bool {
@@ -176,14 +221,19 @@ public struct HookContext: Codable, Sendable, Hashable {
         return ["1", "true", "yes"].contains(value.lowercased())
     }
 
-    /// `CLAUDE_CODE_ENTRYPOINT` values used by Claude Desktop (Code tab, 3P build, Cowork).
-    public static let desktopEntrypoints: Set<String> = ["claude-desktop", "claude-desktop-3p", "local-agent"]
+    /// `CLAUDE_CODE_ENTRYPOINT` values of Claude Desktop's Code tab (regular and 3P builds).
+    public static let desktopEntrypoints: Set<String> = ["claude-desktop", "claude-desktop-3p"]
+    /// `CLAUDE_CODE_ENTRYPOINT` of Claude Desktop's Cowork agent (not a Code-tab chat; hidden).
+    public static let coworkEntrypoint = "local-agent"
     /// `CLAUDE_CODE_ENTRYPOINT` of the VS Code extension's chat panel.
     public static let vscodeEntrypoint = "claude-vscode"
 
-    /// The session is hosted by Claude Desktop (entrypoint, inherited bundle id or `local_` host session id).
+    /// The session is hosted by Claude Desktop's Code tab (entrypoint, inherited bundle id or `local_` host
+    /// session id). Cowork (`local-agent`) is excluded.
     public var isDesktopHost: Bool {
-        if let entrypoint, Self.desktopEntrypoints.contains(entrypoint.lowercased()) { return true }
+        let entry = entrypoint?.lowercased()
+        if entry == Self.coworkEntrypoint { return false }
+        if let entry, Self.desktopEntrypoints.contains(entry) { return true }
         if bundleIdentifier == SessionHost.claudeDesktopBundleID { return true }
         return hostSessionID?.hasPrefix("local_") == true
     }
@@ -194,16 +244,19 @@ public struct HookContext: Codable, Sendable, Hashable {
         isDesktopHost || entrypoint?.lowercased() == Self.vscodeEntrypoint
     }
 
-    /// `claude -p`, Agent SDK and other non-interactive sessions (SPEC §E.2 `.hiddenHeadless`).
+    /// Third-party Agent SDK apps (`sdk-*`), Cowork, and plain `claude -p` runs (SPEC §E.2 `.hiddenHeadless`).
+    /// Desktop and VS Code drive the CLI with `-p` / stream-json but show the chat, so they are never headless.
     public var isHeadless: Bool {
-        if let entrypoint, entrypoint.lowercased().hasPrefix("sdk") { return true }
+        let entry = entrypoint?.lowercased() ?? ""
+        if entry.hasPrefix("sdk") || entry == Self.coworkEntrypoint { return true }
         return isPrintMode && !isInteractiveHost
     }
 
     /// Whether the hook should hold the connection open for a PermissionRequest decision. Internal, remote
     /// and headless sessions never get a card, so their hooks do not wait (Claude decides on its own).
+    /// Subagent requests do wait: they surface as a card on the parent session.
     public func shouldAwaitPermissionReply(for event: HookEventName, agentID: String?) -> Bool {
-        event.isBlocking && !isInternal && !isRemote && !isHeadless && agentID == nil
+        event.isBlocking && !isInternal && !isRemote && !isHeadless
     }
 
     // Tolerant decoding: every key optional (older/newer hook binaries).
@@ -211,33 +264,52 @@ public struct HookContext: Codable, Sendable, Hashable {
         case hookVersion, claudePID, claudeStartTime, claudeExecutablePath, tty, termProgram, termSessionID
         case iTermSessionID, tmux, tmuxPane, kittyWindowID, weztermPane, ghosttyResourcesDir, vscodeInjection
         case bundleIdentifier, entrypoint, hostSessionID, claudeConfigDir, isPrintMode, isInternal, isRemote
+        case claudeInvocation, processChain, hostAppPath
     }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
-            hookVersion: try c.decodeIfPresent(String.self, forKey: .hookVersion) ?? "0",
-            claudePID: try c.decodeIfPresent(Int32.self, forKey: .claudePID),
-            claudeStartTime: try c.decodeIfPresent(Double.self, forKey: .claudeStartTime),
-            claudeExecutablePath: try c.decodeIfPresent(String.self, forKey: .claudeExecutablePath),
-            tty: try c.decodeIfPresent(String.self, forKey: .tty),
-            termProgram: try c.decodeIfPresent(String.self, forKey: .termProgram),
-            termSessionID: try c.decodeIfPresent(String.self, forKey: .termSessionID),
-            iTermSessionID: try c.decodeIfPresent(String.self, forKey: .iTermSessionID),
-            tmux: try c.decodeIfPresent(String.self, forKey: .tmux),
-            tmuxPane: try c.decodeIfPresent(String.self, forKey: .tmuxPane),
-            kittyWindowID: try c.decodeIfPresent(String.self, forKey: .kittyWindowID),
-            weztermPane: try c.decodeIfPresent(String.self, forKey: .weztermPane),
-            ghosttyResourcesDir: try c.decodeIfPresent(String.self, forKey: .ghosttyResourcesDir),
-            vscodeInjection: try c.decodeIfPresent(Bool.self, forKey: .vscodeInjection) ?? false,
-            bundleIdentifier: try c.decodeIfPresent(String.self, forKey: .bundleIdentifier),
-            entrypoint: try c.decodeIfPresent(String.self, forKey: .entrypoint),
-            hostSessionID: try c.decodeIfPresent(String.self, forKey: .hostSessionID),
-            claudeConfigDir: try c.decodeIfPresent(String.self, forKey: .claudeConfigDir),
-            isPrintMode: try c.decodeIfPresent(Bool.self, forKey: .isPrintMode) ?? false,
-            isInternal: try c.decodeIfPresent(Bool.self, forKey: .isInternal) ?? false,
-            isRemote: try c.decodeIfPresent(Bool.self, forKey: .isRemote) ?? false
+            hookVersion: (try? c.decodeIfPresent(String.self, forKey: .hookVersion)) ?? "0",
+            claudePID: (try? c.decodeIfPresent(Int32.self, forKey: .claudePID)) ?? nil,
+            claudeStartTime: (try? c.decodeIfPresent(Double.self, forKey: .claudeStartTime)) ?? nil,
+            claudeExecutablePath: (try? c.decodeIfPresent(String.self, forKey: .claudeExecutablePath)) ?? nil,
+            tty: (try? c.decodeIfPresent(String.self, forKey: .tty)) ?? nil,
+            termProgram: (try? c.decodeIfPresent(String.self, forKey: .termProgram)) ?? nil,
+            termSessionID: (try? c.decodeIfPresent(String.self, forKey: .termSessionID)) ?? nil,
+            iTermSessionID: (try? c.decodeIfPresent(String.self, forKey: .iTermSessionID)) ?? nil,
+            tmux: (try? c.decodeIfPresent(String.self, forKey: .tmux)) ?? nil,
+            tmuxPane: (try? c.decodeIfPresent(String.self, forKey: .tmuxPane)) ?? nil,
+            kittyWindowID: (try? c.decodeIfPresent(String.self, forKey: .kittyWindowID)) ?? nil,
+            weztermPane: (try? c.decodeIfPresent(String.self, forKey: .weztermPane)) ?? nil,
+            ghosttyResourcesDir: (try? c.decodeIfPresent(String.self, forKey: .ghosttyResourcesDir)) ?? nil,
+            vscodeInjection: (try? c.decodeIfPresent(Bool.self, forKey: .vscodeInjection)) ?? false,
+            bundleIdentifier: (try? c.decodeIfPresent(String.self, forKey: .bundleIdentifier)) ?? nil,
+            entrypoint: (try? c.decodeIfPresent(String.self, forKey: .entrypoint)) ?? nil,
+            hostSessionID: (try? c.decodeIfPresent(String.self, forKey: .hostSessionID)) ?? nil,
+            claudeConfigDir: (try? c.decodeIfPresent(String.self, forKey: .claudeConfigDir)) ?? nil,
+            isPrintMode: (try? c.decodeIfPresent(Bool.self, forKey: .isPrintMode)) ?? false,
+            isInternal: (try? c.decodeIfPresent(Bool.self, forKey: .isInternal)) ?? false,
+            isRemote: (try? c.decodeIfPresent(Bool.self, forKey: .isRemote)) ?? false,
+            claudeInvocation: (try? c.decodeIfPresent([String].self, forKey: .claudeInvocation)) ?? nil,
+            processChain: (try? c.decodeIfPresent([HookProcessEntry].self, forKey: .processChain)) ?? nil,
+            hostAppPath: (try? c.decodeIfPresent(String.self, forKey: .hostAppPath)) ?? nil
         )
+    }
+}
+
+/// One ancestor process of the hook (`HookContext.processChain`).
+public struct HookProcessEntry: Codable, Sendable, Hashable {
+    public var pid: Int32
+    /// Short command name (`p_comm` / `/proc/<pid>/comm`), e.g. "zsh", "iTerm2", "2.1.284".
+    public var name: String
+    /// Executable path when readable (same-user processes).
+    public var path: String?
+
+    public init(pid: Int32, name: String, path: String? = nil) {
+        self.pid = pid
+        self.name = name
+        self.path = path
     }
 }
 

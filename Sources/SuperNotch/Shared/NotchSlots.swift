@@ -1,24 +1,56 @@
 // Owner: FOUNDATION (SPEC §D.5, §D.10).
 //
 // The only place that references stream views for the notch. The shell (NotchContainerView) renders:
-// * `islandLeading()` / `islandTrailing()` in the closed state (left / right wing),
+// * `islandLeading()` / `islandTrailing()` in the closed state (left / right wing, sized by `closedWings`),
 // * `peek(request)` for an auto popup,
 // * `tab(tab)` when expanded (below the top band, inset by `NotchMetrics.contentPadding`).
 // All slot views read their models from the environment (`AppModel.inject(_:)`).
+//
+// Closed-state rules (compact on purpose, the user does not want a fat notch):
+// * island content = a track is **playing**, or a Claude session is 🟡 working / 🔴 needs you;
+// * right wing: Claude dots (`ClaudeIslandIndicator`) while Claude is active, otherwise the visualizer while
+//   playing, plus the orange usage-warning dot when needed;
+// * without island content (or in invisible mode) only the usage-warning dot may show, in a 14 pt right wing.
 import SuperNotchCore
 import SwiftUI
 
 enum NotchSlots {
 
-    /// Left wing of the closed island: album artwork (22 × 22) while a track is loaded; nothing otherwise.
+    // MARK: Closed
+
+    /// Left wing of the closed island: album artwork (22 × 22) while a track is playing; nothing otherwise.
     static func islandLeading() -> some View {
         NotchIslandLeadingSlot()
     }
 
-    /// Right wing of the closed notch: visualizer and/or Claude dots + usage-warning dot.
+    /// Right wing of the closed notch: Claude dots, or the visualizer, and/or the usage-warning dot.
     static func islandTrailing() -> some View {
         NotchIslandTrailingSlot()
     }
+
+    /// Leading/trailing wing widths of the closed shape (single rule: `NotchMetrics.closedWings`).
+    /// Reads observable state, so calling it from a view body tracks it.
+    static func closedWings(
+        settings: AppSettings, media: MediaModel, claude: ClaudeSessionsModel
+    ) -> (leading: CGFloat, trailing: CGFloat) {
+        NotchMetrics.closedWings(
+            mode: settings.closedMode,
+            hasIslandContent: hasIslandContent(settings: settings, media: media, claude: claude),
+            showsUsageWarning: showsUsageWarning(settings: settings, claude: claude))
+    }
+
+    /// Total wing width, for `NotchGeometry.size(for: .closed, closedWidthExtra:)`.
+    static func closedWidthExtra(settings: AppSettings, media: MediaModel, claude: ClaudeSessionsModel) -> CGFloat {
+        let wings = closedWings(settings: settings, media: media, claude: claude)
+        return wings.leading + wings.trailing
+    }
+
+    /// Whether the island (both 36 pt wings) has anything to show.
+    static func hasIslandContent(settings: AppSettings, media: MediaModel, claude: ClaudeSessionsModel) -> Bool {
+        isPlaying(settings: settings, media: media) || isClaudeActive(settings: settings, claude: claude)
+    }
+
+    // MARK: Open
 
     /// Content of a peek (auto popup). `.id(request.id)` gives every request fresh view state
     /// (e.g. a queued permission card never inherits the previous card's "Confirm allow" step).
@@ -45,33 +77,20 @@ enum NotchSlots {
         }
     }
 
-    /// `closedWidthExtra` for `NotchGeometry.size(for: .closed, closedWidthExtra:)` (see
-    /// `NotchMetrics.closedWidthExtra`). Reads observable state, so calling it from a view body tracks it.
-    static func closedWidthExtra(settings: AppSettings, media: MediaModel, claude: ClaudeSessionsModel) -> CGFloat {
-        NotchMetrics.closedWidthExtra(
-            mode: settings.closedMode,
-            hasTrack: showsTrack(settings: settings, media: media),
-            hasActiveSessions: settings.claudeEnabled && claude.hasActiveSessions,
-            showsUsageWarning: showsUsageWarning(settings: settings, claude: claude))
+    // MARK: Rules (shared with the private slot views below)
+
+    fileprivate static func isPlaying(settings: AppSettings, media: MediaModel) -> Bool {
+        settings.spotifyEnabled && media.hasTrack && media.isPlaying
     }
 
-    // MARK: Shared rules (also used by the private slot views below)
-
-    fileprivate static func showsTrack(settings: AppSettings, media: MediaModel) -> Bool {
-        settings.spotifyEnabled && media.hasTrack
+    /// 🟡 or 🔴. Finished (🟢) and idle sessions do not keep the island open; 🟢 is announced by its peek.
+    fileprivate static func isClaudeActive(settings: AppSettings, claude: ClaudeSessionsModel) -> Bool {
+        guard settings.claudeEnabled, let light = claude.aggregateLight else { return false }
+        return light >= .yellow
     }
 
     fileprivate static func showsUsageWarning(settings: AppSettings, claude: ClaudeSessionsModel) -> Bool {
         settings.claudeEnabled && settings.showUsageLimits && claude.isUsageWarning
-    }
-
-    /// The visualizer only gets the right wing when no Claude session needs the dots (36 pt is not enough
-    /// for 4 bars + 4 dots).
-    fileprivate static func showsVisualizer(
-        settings: AppSettings, media: MediaModel, claude: ClaudeSessionsModel
-    ) -> Bool {
-        settings.closedMode == .island && settings.showVisualizer && showsTrack(settings: settings, media: media)
-            && !(settings.claudeEnabled && claude.hasActiveSessions)
     }
 }
 
@@ -83,7 +102,7 @@ private struct NotchIslandLeadingSlot: View {
 
     var body: some View {
         let settings = store.settings
-        if settings.closedMode == .island && NotchSlots.showsTrack(settings: settings, media: media) {
+        if settings.closedMode == .island && NotchSlots.isPlaying(settings: settings, media: media) {
             MediaIslandArtwork()
         }
     }
@@ -96,14 +115,33 @@ private struct NotchIslandTrailingSlot: View {
 
     var body: some View {
         let settings = store.settings
-        HStack(spacing: DesignTokens.Spacing.xs) {
-            if NotchSlots.showsVisualizer(settings: settings, media: media, claude: claude) {
-                MediaIslandVisualizer()
+        let island = settings.closedMode == .island
+            && NotchSlots.hasIslandContent(settings: settings, media: media, claude: claude)
+        let warning = NotchSlots.showsUsageWarning(settings: settings, claude: claude)
+        if island && NotchSlots.isClaudeActive(settings: settings, claude: claude) {
+            // Dots for the sessions + the usage-warning dot (drawn by claude-app).
+            ClaudeIslandIndicator()
+        } else if island {
+            HStack(spacing: DesignTokens.Spacing.xs) {
+                if settings.showVisualizer {
+                    MediaIslandVisualizer()
+                }
+                if warning {
+                    NotchUsageWarningDot()
+                }
             }
-            if settings.claudeEnabled {
-                // Reads settings.closedMode itself: dots + warning in island mode, warning dot only when invisible.
-                ClaudeIslandIndicator()
-            }
+        } else if warning {
+            NotchUsageWarningDot()
         }
+    }
+}
+
+/// The orange dot in the closed notch when Claude usage is at or above the threshold (§A.2, §D.9).
+private struct NotchUsageWarningDot: View {
+    var body: some View {
+        Circle()
+            .fill(DesignTokens.Colors.warningOrange)
+            .frame(width: NotchMetrics.warningDotDiameter, height: NotchMetrics.warningDotDiameter)
+            .accessibilityLabel("Claude usage limit warning")
     }
 }

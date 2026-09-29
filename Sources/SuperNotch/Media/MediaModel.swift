@@ -481,9 +481,11 @@ final class MediaModel {
         }
         // The oEmbed fallback is used only once AppleScript has had its say (or is not permitted at all), so a
         // normal track change costs a single image request.
-        let allowFallback = automationPermission != .granted || authoritativeTrackID == track.id
-        guard let source = SpotifyArtworkPolicy.source(for: track, allowOEmbedFallback: allowFallback) else {
-            clearArtwork()  // no cover (yet): never keep the previous track's cover
+        let scriptConfirmed = automationPermission != .granted || authoritativeTrackID == track.id
+        guard let source = SpotifyArtworkPolicy.source(for: track, allowOEmbedFallback: scriptConfirmed) else {
+            // Not known yet (the notification carries no cover URL): keep the previous cover so the change is a
+            // smooth crossfade. Once the script has answered and there is still no URL (ads, local files), clear.
+            if scriptConfirmed { clearArtwork() }
             return
         }
         let key = source.cacheKey
@@ -495,12 +497,17 @@ final class MediaModel {
             showArtwork(cached)
             return
         }
-        artwork = nil
-        accent = nil
+        // The old cover stays until the new one has loaded; a failed load clears it.
         artworkTask = Task { [weak self, loader = artworkLoader] in
             let result = await loader.load(source)
-            guard let self, !Task.isCancelled, self.currentArtworkKey == key, let result else { return }
-            self.showArtwork(result)
+            guard let self, !Task.isCancelled, self.currentArtworkKey == key else { return }
+            if let result {
+                self.showArtwork(result)
+            } else {
+                // Keep the key: a failed URL is not retried on every poll, only when the track changes.
+                self.artwork = nil
+                self.accent = nil
+            }
         }
     }
 

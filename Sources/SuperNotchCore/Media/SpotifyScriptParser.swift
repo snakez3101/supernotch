@@ -159,13 +159,23 @@ public enum SpotifyScriptParser {
         return Int(min(max(value.rounded(), 0), 100))
     }
 
-    /// Parses AppleScript numbers, which are locale formatted ("12,5" in German locales) and may use
-    /// exponent notation ("1.5E+2"). Non-finite values are rejected.
+    /// Parses AppleScript numbers, which are locale formatted ("12,5" in German locales) and may use exponent
+    /// notation ("1.5E+2"). When both separators appear the later one is the decimal separator ("1.234,5" and
+    /// "1,234.5" are both 1234.5). Non-finite values are rejected.
     static func number(_ text: String) -> Double? {
-        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return nil }
         if let parsed = Double(value), parsed.isFinite { return parsed }
-        if let parsed = Double(value.replacingOccurrences(of: ",", with: ".")), parsed.isFinite { return parsed }
-        return nil
+        if let comma = value.lastIndex(of: ","), let dot = value.lastIndex(of: ".") {
+            if comma > dot {
+                value = value.replacingOccurrences(of: ".", with: "").replacingOccurrences(of: ",", with: ".")
+            } else {
+                value = value.replacingOccurrences(of: ",", with: "")
+            }
+        } else {
+            value = value.replacingOccurrences(of: ",", with: ".")
+        }
+        guard let parsed = Double(value), parsed.isFinite else { return nil }
+        return parsed
     }
 }

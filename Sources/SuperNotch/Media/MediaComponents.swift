@@ -29,6 +29,7 @@ struct MediaArtworkView: View {
                     .foregroundStyle(DesignTokens.Colors.tertiaryText)
             }
         }
+        .animation(.easeOut(duration: 0.2), value: image.map { ObjectIdentifier($0) })
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .accessibilityHidden(true)

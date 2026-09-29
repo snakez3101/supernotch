@@ -211,14 +211,24 @@ nonisolated enum ClaudeProcessRunner {
 }
 
 /// Finds the `claude` CLI and builds the environment for the processes SuperNotch spawns.
-/// SuperNotch is launched by launchd and does not see the user's shell PATH, so the login shell is asked
-/// once (cached) and well-known install locations are added.
+/// SuperNotch is launched by launchd (PATH = /usr/bin:/bin:/usr/sbin:/sbin), so `claude` is looked up in
+/// well-known install locations, the login shell's PATH, `command -v claude` in the user's shell (once) and
+/// finally the CLI bundled with Claude Desktop. Results are cached.
 nonisolated final class ClaudeCLIEnvironment: @unchecked Sendable {
     static let shared = ClaudeCLIEnvironment()
+
+    /// What an internal `claude` call is for (decides the extra environment).
+    enum Purpose: Sendable {
+        /// `claude --version`, `claude agents --json`.
+        case query
+        /// The Haiku title call: safe mode (no MCP servers, hooks, CLAUDE.md, plugins).
+        case title
+    }
 
     private let lock = NSLock()
     private var cachedPATH: String?
     private var cachedExecutable: String?
+    private var lastMiss: Date?
     private var cachedVersions: [String: ClaudeVersion] = [:]
 
     /// Keys stripped from our environment before spawning `claude` (in case SuperNotch itself was started
@@ -229,35 +239,38 @@ nonisolated final class ClaudeCLIEnvironment: @unchecked Sendable {
     ]
 
     /// Environment for internal `claude` invocations: the user's PATH, the internal marker (our own hook
-    /// then hides the session, SPEC §E.2) and the config dir when it is not the default.
-    func environment(homeDirectory: String, configDirectory: String?) -> [String: String] {
+    /// then hides the session, SPEC §E.2), no non-essential traffic, and the config dir when not the default.
+    func environment(homeDirectory: String, configDirectory: String?, purpose: Purpose = .query) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         for key in Self.strippedKeys { environment[key] = nil }
         environment["PATH"] = searchPath(homeDirectory: homeDirectory)
         environment["HOME"] = homeDirectory
         environment[IPCConfig.internalMarkerEnvironmentKey] = "1"
+        environment["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+        if purpose == .title { environment["CLAUDE_CODE_SAFE_MODE"] = "1" }
         if let configDirectory, configDirectory != homeDirectory + "/.claude" {
             environment["CLAUDE_CONFIG_DIR"] = configDirectory
         }
         return environment
     }
 
-    /// Absolute path of `claude`. `hint` is a path reported by the hook (preferred when usable).
-    /// Blocking on first use (asks the login shell); call off the main thread.
+    /// Absolute path of `claude`, nil when Claude Code is not installed. `hint` is the executable path the
+    /// hook reported (used when it really is the claude binary, not `node`). Blocking on first use; call off
+    /// the main thread.
     func claudeExecutable(homeDirectory: String, hint: String?) -> String? {
         let fileManager = FileManager.default
-        if let hint, hint.hasPrefix("/"), !hint.hasSuffix(".js"), fileManager.isExecutableFile(atPath: hint) {
-            return hint
-        }
+        if let hint, Self.isUsableHint(hint), fileManager.isExecutableFile(atPath: hint) { return hint }
         lock.lock()
         let cached = cachedExecutable
+        let recentMiss = lastMiss.map { Date().timeIntervalSince($0) < 600 } ?? false
         lock.unlock()
         if let cached, fileManager.isExecutableFile(atPath: cached) { return cached }
+        if recentMiss { return nil }
 
-        let directories = searchPath(homeDirectory: homeDirectory).split(separator: ":").map(String.init)
-        let found = directories.lazy.map { $0 + "/claude" }.first { fileManager.isExecutableFile(atPath: $0) }
+        let found = locate(homeDirectory: homeDirectory)
         lock.lock()
         cachedExecutable = found
+        lastMiss = found == nil ? Date() : nil
         lock.unlock()
         return found
     }
@@ -271,7 +284,8 @@ nonisolated final class ClaudeCLIEnvironment: @unchecked Sendable {
         guard
             let output = ClaudeProcessRunner.runSync(
                 executable: executable, arguments: ["--version"],
-                environment: environment(homeDirectory: homeDirectory, configDirectory: nil), timeout: 5),
+                environment: environment(homeDirectory: homeDirectory, configDirectory: nil),
+                currentDirectory: homeDirectory, timeout: 5),
             output.succeeded, let version = ClaudeVersion(output.text)
         else { return nil }
         lock.lock()
@@ -284,6 +298,7 @@ nonisolated final class ClaudeCLIEnvironment: @unchecked Sendable {
     func invalidate() {
         lock.lock()
         cachedExecutable = nil
+        lastMiss = nil
         cachedVersions = [:]
         lock.unlock()
     }
@@ -295,23 +310,18 @@ nonisolated final class ClaudeCLIEnvironment: @unchecked Sendable {
         lock.unlock()
         if let cached { return cached }
 
+        // The login shell's order first: that is the `claude` the user actually runs.
         var directories: [String] = []
-        if let login = loginShellPATH() { directories += login.split(separator: ":").map(String.init) }
-        directories += [
-            homeDirectory + "/.local/bin",
-            homeDirectory + "/.claude/local",
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            homeDirectory + "/.npm-global/bin",
-            homeDirectory + "/.bun/bin",
-            homeDirectory + "/.volta/bin",
-            homeDirectory + "/Library/pnpm",
-        ]
-        directories += nvmBinDirectories(homeDirectory: homeDirectory)
+        if let login = loginShellOutput(script: "printf '%s' \"$PATH\"", interactive: false),
+            !login.contains("\n")
+        {
+            directories += login.split(separator: ":").map(String.init)
+        }
+        directories += Self.wellKnownDirectories(homeDirectory: homeDirectory)
         directories += (ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
             .split(separator: ":").map(String.init)
         var seen = Set<String>()
-        let unique = directories.filter { !$0.isEmpty && seen.insert($0).inserted }
+        let unique = directories.filter { $0.hasPrefix("/") && seen.insert($0).inserted }
         let path = unique.joined(separator: ":")
         lock.lock()
         cachedPATH = path
@@ -319,25 +329,102 @@ nonisolated final class ClaudeCLIEnvironment: @unchecked Sendable {
         return path
     }
 
-    private func loginShellPATH() -> String? {
+    // MARK: - Lookup
+
+    /// The hook reports the claude process's executable. For npm installs that is `node`, which cannot run
+    /// `agents --json`; accept only real claude binaries (`…/claude`, native installs `…/claude/versions/<v>`).
+    static func isUsableHint(_ path: String) -> Bool {
+        guard path.hasPrefix("/"), !path.hasSuffix(".js") else { return false }
+        let name = (path as NSString).lastPathComponent
+        return name == "claude" || path.contains("/claude/versions/")
+    }
+
+    static func wellKnownDirectories(homeDirectory: String) -> [String] {
+        var directories = [
+            homeDirectory + "/.claude/local",
+            homeDirectory + "/.local/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            homeDirectory + "/.npm-global/bin",
+            homeDirectory + "/.bun/bin",
+            homeDirectory + "/.volta/bin",
+            homeDirectory + "/Library/pnpm",
+        ]
+        let nvmRoot = homeDirectory + "/.nvm/versions/node"
+        if let versions = try? FileManager.default.contentsOfDirectory(atPath: nvmRoot) {
+            directories += versions.sorted().reversed().map { nvmRoot + "/" + $0 + "/bin" }
+        }
+        return directories
+    }
+
+    private func locate(homeDirectory: String) -> String? {
+        let fileManager = FileManager.default
+        // 1. Well-known locations and the login shell's PATH.
+        for directory in searchPath(homeDirectory: homeDirectory).split(separator: ":") {
+            let candidate = directory + "/claude"
+            if fileManager.isExecutableFile(atPath: candidate) { return candidate }
+        }
+        // 2. The user's interactive shell (nvm & co. are often set up in .zshrc only).
+        if let output = loginShellOutput(script: "command -v claude", interactive: true),
+            let line = output.split(whereSeparator: \.isNewline).last(where: { $0.hasPrefix("/") })
+        {
+            let path = String(line).trimmingCharacters(in: .whitespaces)
+            if fileManager.isExecutableFile(atPath: path) { return path }
+        }
+        // 3. The CLI bundled with Claude Desktop.
+        return Self.desktopBundledCLI(homeDirectory: homeDirectory)
+    }
+
+    /// `~/Library/Application Support/Claude/claude-code/<version>/…/claude`, newest version first.
+    static func desktopBundledCLI(homeDirectory: String) -> String? {
+        let root = homeDirectory + "/Library/Application Support/Claude/claude-code"
+        let fileManager = FileManager.default
+        guard let versions = try? fileManager.contentsOfDirectory(atPath: root) else { return nil }
+        let sorted = versions.sorted { lhs, rhs in
+            let left = ClaudeVersion(lhs)
+            let right = ClaudeVersion(rhs)
+            if let left, let right { return left > right }
+            return lhs > rhs
+        }
+        for version in sorted {
+            let base = root + "/" + version
+            let direct = [
+                base + "/claude", base + "/claude.app/Contents/MacOS/claude", base + "/bin/claude",
+            ]
+            if let hit = direct.first(where: { fileManager.isExecutableFile(atPath: $0) }) { return hit }
+            guard let enumerator = fileManager.enumerator(atPath: base) else { continue }
+            var visited = 0
+            while let relative = enumerator.nextObject() as? String, visited < 400 {
+                visited += 1
+                if (relative as NSString).lastPathComponent == "claude", enumerator.level <= 4 {
+                    let path = base + "/" + relative
+                    var isDirectory: ObjCBool = false
+                    if fileManager.fileExists(atPath: path, isDirectory: &isDirectory), !isDirectory.boolValue,
+                        fileManager.isExecutableFile(atPath: path)
+                    {
+                        return path
+                    }
+                }
+                if enumerator.level > 4 { enumerator.skipDescendants() }
+            }
+        }
+        return nil
+    }
+
+    /// Runs `script` in the user's login shell (3 s budget). Nil on failure.
+    private func loginShellOutput(script: String, interactive: Bool) -> String? {
         let shell = ProcessInfo.processInfo.environment["SHELL"].flatMap { $0.isEmpty ? nil : $0 } ?? "/bin/zsh"
         guard FileManager.default.isExecutableFile(atPath: shell) else { return nil }
         var environment = ProcessInfo.processInfo.environment
         environment[IPCConfig.internalMarkerEnvironmentKey] = "1"
+        let flags = interactive ? ["-l", "-i", "-c"] : ["-l", "-c"]
         guard
             let output = ClaudeProcessRunner.runSync(
-                executable: shell, arguments: ["-l", "-c", "printf '%s' \"$PATH\""], environment: environment,
-                timeout: 3, maxOutputBytes: 64 * 1024),
+                executable: shell, arguments: flags + [script], environment: environment,
+                currentDirectory: NSHomeDirectory(), timeout: 3, maxOutputBytes: 64 * 1024),
             output.succeeded
         else { return nil }
         let text = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard text.contains("/"), !text.contains("\n") else { return nil }
-        return text
-    }
-
-    private func nvmBinDirectories(homeDirectory: String) -> [String] {
-        let root = homeDirectory + "/.nvm/versions/node"
-        guard let versions = try? FileManager.default.contentsOfDirectory(atPath: root) else { return [] }
-        return versions.sorted().reversed().map { root + "/" + $0 + "/bin" }
+        return text.contains("/") ? text : nil
     }
 }

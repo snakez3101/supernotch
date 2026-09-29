@@ -104,6 +104,25 @@ struct HoverIntentTests {
         #expect(intent.timerFired(now: t0 + 1) == .none)
     }
 
+    @Test func closeUnderThePointerNeedsAnExitBeforeReopening() {
+        var intent = HoverIntent(openDelay: 0.15, closeDelay: 0.35)
+        intent.reset(isOpen: false, pointerInside: true)
+        #expect(!intent.isArmedForOpen)
+        #expect(intent.mouseMoved(inTrigger: true, inOpenRegion: true, now: t0) == .none)
+        #expect(intent.timerFired(now: t0 + 1) == .none)
+        #expect(intent.mouseMoved(inTrigger: false, inOpenRegion: false, now: t0 + 2) == .none)
+        #expect(intent.isArmedForOpen)
+        #expect(intent.mouseMoved(inTrigger: true, inOpenRegion: false, now: t0 + 3) == .schedule(at: t0 + 3 + 0.15))
+    }
+
+    @Test func plainCloseResetKeepsHoverOpenWorking() {
+        // `reset(isOpen:)` is the armed variant: a close by hover-leave happens with the pointer outside.
+        var intent = HoverIntent(openDelay: 0.15, closeDelay: 0.35)
+        intent.reset(isOpen: true)
+        intent.reset(isOpen: false, pointerInside: false)
+        #expect(intent.mouseMoved(inTrigger: true, inOpenRegion: false, now: t0) == .schedule(at: t0 + 0.15))
+    }
+
     @Test func negativeDelaysClamp() {
         let intent = HoverIntent(openDelay: -1, closeDelay: -2)
         #expect(intent.openDelay == 0)

@@ -75,11 +75,6 @@ public struct NotchGeometry: Sendable, Hashable {
         }
     }
 
-    /// Shape size for a presentation with (possibly asymmetric) closed wings.
-    public func size(for presentation: NotchPresentation, wings: NotchClosedWings) -> CGSize {
-        size(for: presentation, closedWidthExtra: wings.total)
-    }
-
     /// Screen rect of a top-centred shape of `size` (for hover/leave tests and positioning helpers).
     public func shapeRectInScreen(for size: CGSize) -> CGRect {
         CGRect(
@@ -87,12 +82,20 @@ public struct NotchGeometry: Sendable, Hashable {
             height: size.height)
     }
 
-    /// Screen rect of the current shape body. Closed shapes follow their wings (a lone right wing shifts the
-    /// shape to the right; the physical notch never moves); open shapes are centred on the notch.
-    public func shapeRectInScreen(for presentation: NotchPresentation, wings: NotchClosedWings) -> CGRect {
-        let rect = shapeRectInScreen(for: size(for: presentation, wings: wings))
-        guard presentation.isClosed else { return rect }
-        return rect.offsetBy(dx: wings.centerOffset, dy: 0)
+    /// Screen rect of the current shape body (open shapes and the symmetric closed wings are all centred on
+    /// the physical notch; `closedWidthExtra` comes from `NotchMetrics.closedWidthExtra`).
+    public func shapeRectInScreen(for presentation: NotchPresentation, closedWidthExtra: CGFloat) -> CGRect {
+        shapeRectInScreen(for: size(for: presentation, closedWidthExtra: closedWidthExtra))
+    }
+
+    /// Where a dwelling pointer opens the closed notch: the physical notch plus `slack` on each side, widened
+    /// to the visible closed shape when island wings are showing (hovering a visible wing is intentional;
+    /// the bare menu bar beside the notch is not).
+    public func triggerRect(closedWidthExtra: CGFloat, slack: CGFloat = NotchMetrics.hoverSlack) -> CGRect {
+        let wing = max(closedWidthExtra, 0) / 2
+        return CGRect(
+            x: notchRect.minX - wing - slack, y: notchRect.minY, width: notchRect.width + 2 * (wing + slack),
+            height: notchRect.height + 1)
     }
 
     /// The region that counts as hovering the notch (physical notch + horizontal slack, up to the screen top).
@@ -128,41 +131,6 @@ public struct NotchGeometry: Sendable, Hashable {
     public func isOnScreen(frame: CGRect) -> Bool {
         abs(frame.minX - screenFrame.minX) < 1 && abs(frame.minY - screenFrame.minY) < 1
             && abs(frame.width - screenFrame.width) < 1 && abs(frame.height - screenFrame.height) < 1
-    }
-}
-
-// MARK: - Closed wings
-
-/// Extra width left and right of the physical notch while closed (SPEC §A.2).
-public struct NotchClosedWings: Sendable, Hashable {
-    public var leading: CGFloat
-    public var trailing: CGFloat
-
-    public init(leading: CGFloat = 0, trailing: CGFloat = 0) {
-        self.leading = max(leading, 0)
-        self.trailing = max(trailing, 0)
-    }
-
-    public static let none = NotchClosedWings()
-
-    public var total: CGFloat { leading + trailing }
-    public var isEmpty: Bool { total == 0 }
-    /// Horizontal offset of the closed shape's centre relative to the notch centre.
-    public var centerOffset: CGFloat { (trailing - leading) / 2 }
-
-    /// - Parameters:
-    ///   - mode: the user's closed style.
-    ///   - hasIslandContent: Spotify has a track or a Claude session is active.
-    ///   - showsUsageWarning: usage ≥ threshold (orange dot).
-    public static func resolve(mode: ClosedNotchMode, hasIslandContent: Bool, showsUsageWarning: Bool)
-        -> NotchClosedWings
-    {
-        if mode == .island && hasIslandContent {
-            return NotchClosedWings(leading: NotchMetrics.islandWingWidth, trailing: NotchMetrics.islandWingWidth)
-        }
-        // Invisible mode (or island mode with nothing to show): exactly the notch, plus a small right wing
-        // for the usage warning dot.
-        return showsUsageWarning ? NotchClosedWings(trailing: NotchMetrics.warningWingWidth) : .none
     }
 }
 

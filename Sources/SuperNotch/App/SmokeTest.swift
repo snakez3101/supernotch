@@ -1,25 +1,31 @@
 // Owner: FOUNDATION (SPEC §G.2).
 //
-// `SuperNotch --smoke-test`, run by CI on the packaged app (`dist/SuperNotch.app/Contents/MacOS/SuperNotch
-// --smoke-test`). It proves that:
+// `SuperNotch --smoke-test`, run by CI on the packaged app (`Scripts/package_app.sh --smoke-test`, 30 s limit).
+// It proves that:
 //   1. the Core contracts work inside the real binary,
 //   2. the bundle is assembled correctly (hook helper, bundle id, LSUIElement), when run from a bundle,
 //   3. settings persist (isolated UserDefaults suite: the user's real settings are never touched),
 //   4. every frozen SwiftUI slot/view builds and lays out with all models injected,
 //   5. the models and the notch window start and stop without crashing.
+// Rules: headless (no window is shown on a Mac without a notch; views render off-screen), no dialogs
+// (Spotify and clipboard capture are switched off in the isolated settings, so no Automation or pasteboard
+// prompt), never touches ~/.claude (the Claude config folder and the hook socket point to a temp folder, and
+// `SUPERNOTCH_SMOKE_TEST=1` tells claude-app to skip hook-binary sync and repair), finishes in a few seconds
+// (watchdog: exit 3 after 25 s).
 // Output: one `SMOKE_PASS|SMOKE_FAIL|SMOKE_SKIP|SMOKE_VIEW <what>` line per step, then `SMOKE_OK` and exit 0,
-// or `SMOKE_FAILED <n>` and exit 1. A watchdog exits 3 if anything hangs.
+// or `SMOKE_FAILED <n>` and exit 1.
 import AppKit
 import SuperNotchCore
 import SwiftUI
 
 enum SmokeTest {
     static let argument = "--smoke-test"
-    /// Set for the smoke-test process so streams can skip user-facing side effects if they want to.
+    /// Set (=1) for the smoke-test process. Models must then skip anything that could show a dialog or touch
+    /// files outside Application Support / the temp folder (claude-app: `ClaudeSessionsModel.isSmokeTest`).
     static let environmentFlag = "SUPERNOTCH_SMOKE_TEST"
 
     private static let defaultsSuite = "io.github.snakez3101.supernotch.smoke-test"
-    private static let timeoutSeconds: Double = 60
+    private static let timeoutSeconds: Double = 25
 
     static func run() -> Never {
         armWatchdog(seconds: timeoutSeconds)
@@ -33,10 +39,21 @@ enum SmokeTest {
         let version = (info["CFBundleShortVersionString"] as? String) ?? "dev"
         emit("SMOKE_START SuperNotch \(version)")
 
-        // Isolate IPC from a possibly running real instance (SocketPath honours $SUPERNOTCH_SOCKET).
-        let socketPath = NSTemporaryDirectory() + "supernotch-smoke-\(ProcessInfo.processInfo.processIdentifier).sock"
-        setenv("SUPERNOTCH_SOCKET", socketPath, 1)
+        // Sandbox everything external: IPC socket, Claude config folder (never ~/.claude), smoke flag.
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let scratch = NSTemporaryDirectory() + "supernotch-smoke-\(pid)"
+        let claudeConfig = scratch + "/claude-config"
+        let socketPath = NSTemporaryDirectory() + "supernotch-smoke-\(pid).sock"  // short: sun_path ≤ 103 bytes
+        do {
+            try FileManager.default.createDirectory(
+                atPath: claudeConfig, withIntermediateDirectories: true, attributes: nil)
+        } catch {
+            emit("SMOKE_FAIL temp folder: \(error.localizedDescription)")
+            exit(1)
+        }
         setenv(environmentFlag, "1", 1)
+        setenv("SUPERNOTCH_SOCKET", socketPath, 1)
+        setenv("CLAUDE_CONFIG_DIR", claudeConfig, 1)
 
         // 1. Core contracts.
         var sample = AppSettings()
@@ -46,11 +63,8 @@ enum SmokeTest {
         check(KeyCombo.toggleNotchDefault.description == "⌥⌘N", "KeyCombo description")
         let paths = SuperNotchPaths(homeDirectory: NSHomeDirectory())
         check(paths.hookBinary.hasSuffix("/SuperNotch/bin/supernotch-hook"), "SuperNotchPaths hook binary")
-        check(
-            NotchMetrics.closedWidthExtra(
-                mode: .island, hasTrack: true, hasActiveSessions: false, showsUsageWarning: false)
-                == 2 * NotchMetrics.islandWingWidth,
-            "NotchMetrics closed wings")
+        let wings = NotchMetrics.closedWings(mode: .invisible, hasIslandContent: false, showsUsageWarning: true)
+        check(wings.leading == 0 && wings.trailing == NotchMetrics.warningWingWidth, "NotchMetrics closed wings")
 
         // 2. Bundle layout (only when running from SuperNotch.app).
         checkBundle(check)
@@ -58,7 +72,6 @@ enum SmokeTest {
         // 3. Settings persistence in an isolated suite.
         let application = NSApplication.shared
         application.setActivationPolicy(.accessory)
-        application.finishLaunching()
         guard let defaults = UserDefaults(suiteName: defaultsSuite) else {
             emit("SMOKE_FAIL isolated UserDefaults suite")
             exit(1)
@@ -81,32 +94,37 @@ enum SmokeTest {
             store.settings.hoverOpenDelay == AppSettings.defaults.hoverOpenDelay && store.settings.onboardingCompleted,
             "SettingsStore reset keeps onboarding state")
         observation.cancel()
+        store.settings.claudeConfigDirOverride = claudeConfig
 
-        // 4. Every frozen slot and window root builds with all models injected.
+        // 4. Every frozen slot and window root builds with all models injected (all features enabled).
         let model = AppModel(settings: store, paths: paths)
         check(AppModel.shared === model, "AppModel.shared")
         renderAllViews(model)
 
-        // 5. Lifecycle (skipped if a real instance is running: shared shelf/clipboard files).
+        // 5. Lifecycle (skipped if a real instance is running: hotkeys and shelf files are shared).
         let bundleID = Bundle.main.bundleIdentifier ?? SuperNotchPaths.bundleIdentifier
-        let ownPID = ProcessInfo.processInfo.processIdentifier
         let otherInstances = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
-            .filter { $0.processIdentifier != ownPID }
+            .filter { $0.processIdentifier != pid }
         if otherInstances.isEmpty {
+            // No Automation prompt (Spotify) and no pasteboard reads (clipboard history) in a smoke test.
+            store.update {
+                $0.spotifyEnabled = false
+                $0.clipboardEnabled = false
+            }
             model.start()
             check(model.isRunning, "models start")
             let controller = NotchWindowController(appModel: model)
             controller.start()
-            spin(1.0)
+            spin(0.8)
             model.notch.open(tab: .home, focus: false)
-            spin(0.6)
+            spin(0.5)
             model.notch.open(tab: .shelf, focus: false)
-            spin(0.6)
+            spin(0.5)
             model.notch.close()
-            spin(0.6)
+            spin(0.5)
             controller.stop()
             model.stop()
-            spin(0.3)
+            spin(0.2)
             check(!model.isRunning, "models stop")
         } else {
             emit("SMOKE_SKIP lifecycle (another SuperNotch instance is running)")
@@ -114,6 +132,7 @@ enum SmokeTest {
 
         defaults.removePersistentDomain(forName: defaultsSuite)
         try? FileManager.default.removeItem(atPath: socketPath)
+        try? FileManager.default.removeItem(atPath: scratch)
 
         if failures.isEmpty {
             emit("SMOKE_OK")
