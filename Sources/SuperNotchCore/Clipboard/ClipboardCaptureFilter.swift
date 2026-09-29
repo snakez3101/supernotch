@@ -1,7 +1,8 @@
 import Foundation
 
-// Owner: shelf-clipboard. Signature FROZEN (SPEC §D.3); baseline implementation.
-// Pure decision whether a pasteboard change is recorded (see http://nspasteboard.org).
+// Owner: shelf-clipboard. Signature FROZEN (SPEC §D.3).
+// Pure decision whether a pasteboard change is recorded (see http://nspasteboard.org), plus the
+// de-duplicating, size-capped insert used by the clipboard history.
 
 public enum ClipboardCaptureFilter {
     /// Marker type SuperNotch adds to its own pasteboard writes so they are not re-captured.
@@ -28,16 +29,33 @@ public enum ClipboardCaptureFilter {
     }
 
     /// - Parameters:
-    ///   - types: raw pasteboard type identifiers of the first item (`NSPasteboard.PasteboardType.rawValue`).
+    ///   - types: raw pasteboard type identifiers (`NSPasteboard.PasteboardType.rawValue`); the app passes all
+    ///     types on the pasteboard because some password managers put the marker on a secondary item.
     ///   - sourceBundleID: `org.nspasteboard.source` value, else the frontmost app.
-    ///   - ignoredBundleIDs: user setting `clipboardIgnoredApps`.
+    ///   - ignoredBundleIDs: user setting `clipboardIgnoredApps` (compared case-insensitively).
     public static func decide(types: [String], sourceBundleID: String?, ignoredBundleIDs: [String]) -> Decision {
         if types.isEmpty { return .skip(reason: "empty") }
         if let skip = types.first(where: { skipTypes.contains($0) }) { return .skip(reason: skip) }
-        if let source = sourceBundleID, ignoredBundleIDs.contains(source) {
-            return .skip(reason: "ignored app")
+        if let source = normalizedBundleID(sourceBundleID) {
+            let lowered = source.lowercased()
+            if ignoredBundleIDs.contains(where: { $0.trimmingCharacters(in: .whitespaces).lowercased() == lowered }) {
+                return .skip(reason: "ignored app")
+            }
         }
         return .capture
+    }
+
+    /// The source app: a non-empty `org.nspasteboard.source` marker wins over the frontmost app (which is
+    /// racy: the user may have switched apps between the copy and our poll).
+    public static func sourceBundleID(marker: String?, frontmost: String?) -> String? {
+        normalizedBundleID(marker) ?? normalizedBundleID(frontmost)
+    }
+
+    static func normalizedBundleID(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
     }
 
     /// Inserts `entry` at the front, removing an older entry with the same hash (keeps its pin), and

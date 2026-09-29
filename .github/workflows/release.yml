@@ -1,0 +1,99 @@
+# SuperNotch release: push a tag like v1.0.0 and this builds, signs and publishes the GitHub release
+# (zip + dmg + SHA256SUMS). See docs/INSTALL.md for the signing secrets.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-26
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check the tag name
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' is not of the form vMAJOR.MINOR.PATCH[-suffix], e.g. v1.0.0 or v1.1.0-rc.1"
+            exit 1
+          fi
+
+      - name: Select Xcode 26
+        run: bash Scripts/ci_select_xcode.sh
+
+      - name: Build (release, arm64)
+        run: swift build -c release --arch arm64 2>&1 | tee build.log
+
+      - name: Test
+        run: swift test 2>&1 | tee test.log
+
+      - name: Import signing certificate (optional)
+        env:
+          SIGNING_P12_BASE64: ${{ secrets.SIGNING_P12_BASE64 }}
+          SIGNING_P12_PASSWORD: ${{ secrets.SIGNING_P12_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.SIGNING_IDENTITY }}
+          # A configured-but-broken certificate must not silently produce an ad-hoc release
+          # (users would lose their permission grants on update).
+          SIGNING_STRICT: '1'
+        run: bash Scripts/ci_import_cert.sh
+
+      - name: Package (sign, zip, dmg) and smoke test
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}" bash Scripts/package_app.sh --smoke-test 2>&1 | tee package.log
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          files=(dist/SuperNotch-*-arm64.zip dist/SuperNotch-*.dmg dist/SHA256SUMS.txt)
+          prerelease=()
+          if [[ "$tag" == *-* ]]; then prerelease=(--prerelease); fi
+          notes=$'## Install\n\n```bash\ncurl -fsSL https://raw.githubusercontent.com/'"$GITHUB_REPOSITORY"$'/main/Scripts/install.sh | bash\n```\n\nOr download the `.dmg` / `.zip` below, drag SuperNotch to Applications and, on first launch, open System Settings > Privacy & Security and click **Open Anyway** (the app is not notarized). Requires macOS 26 (Tahoe) on Apple Silicon.\n'
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists: replacing its assets"
+            gh release upload "$tag" "${files[@]}" --clobber
+          else
+            gh release create "$tag" "${files[@]}" --title "SuperNotch ${tag#v}" --verify-tag \
+              --generate-notes --notes "$notes" ${prerelease[@]+"${prerelease[@]}"} \
+              || gh release create "$tag" "${files[@]}" --title "SuperNotch ${tag#v}" --verify-tag \
+                   --generate-notes ${prerelease[@]+"${prerelease[@]}"}
+          fi
+
+      - name: Summarize errors
+        if: failure()
+        run: bash Scripts/ci_error_summary.sh build.log test.log package.log
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-logs
+          path: |
+            build.log
+            test.log
+            package.log
+          if-no-files-found: ignore
+
+      - name: Remove temporary keychain
+        if: always()
+        run: |
+          if [[ -n "${SIGN_KEYCHAIN:-}" ]]; then security delete-keychain "$SIGN_KEYCHAIN" || true; fi

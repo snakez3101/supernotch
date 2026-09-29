@@ -17,3 +17,15 @@ build.log
 
 # macOS
 .DS_Store
+
+# Signing material (Scripts/make_selfsigned_cert.sh output, must never be committed)
+supernotch-signing/
+*.key
+*.keychain
+*.keychain-db
+
+# CI / packaging logs
+test.log
+package.log
+format.log
+*.icns

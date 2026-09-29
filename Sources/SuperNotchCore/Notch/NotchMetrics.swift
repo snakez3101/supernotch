@@ -61,4 +61,51 @@ public enum NotchMetrics {
     public static let popupDebounce: TimeInterval = 0.8
     /// Second click window for dangerous permission confirmation.
     public static let dangerConfirmWindow: TimeInterval = 4
+    /// Content fades in this long after the shape starts to open (§A.2).
+    public static let contentFadeInDelay: Double = 0.06
+
+    // MARK: Closed-state wings (§A.2)
+
+    /// Total extra width of the closed shape (symmetric, top-centred) for `NotchGeometry.size(for:closedWidthExtra:)`.
+    /// - island mode with something to show (a loaded track or an active Claude session): 2 × `islandWingWidth`;
+    /// - otherwise, while the usage warning is showing: 2 × `warningWingWidth` (the dot sits in the right wing);
+    /// - otherwise 0 (looks exactly like the hardware notch).
+    public static func closedWidthExtra(
+        mode: ClosedNotchMode, hasTrack: Bool, hasActiveSessions: Bool, showsUsageWarning: Bool
+    ) -> CGFloat {
+        if mode == .island, hasTrack || hasActiveSessions { return 2 * islandWingWidth }
+        if showsUsageWarning { return 2 * warningWingWidth }
+        return 0
+    }
+
+    // MARK: Glass look (§A.3)
+
+    /// Unit location (0 = top of the shape, 1 = bottom) where the black gradient becomes fully clear.
+    public static let glassClearLocation: Double = 0.65
+    /// Minimum distance between the end of the solid band and the clear stop, so the fade stays soft.
+    public static let glassMinimumFade: Double = 0.2
+
+    /// Gradient stops for the black band that merges the glass into the hardware notch.
+    public struct GlassGradientStops: Sendable, Hashable {
+        /// Solid black from 0 down to here (the notch height).
+        public let solidEnd: Double
+        /// Fully clear from here down.
+        public let clearAt: Double
+
+        public init(solidEnd: Double, clearAt: Double) {
+            self.solidEnd = solidEnd
+            self.clearAt = clearAt
+        }
+    }
+
+    /// Solid black down to the notch height, clear at about 65 % of the shape height (never less than
+    /// `glassMinimumFade` below the solid band). Always returns 0 ≤ solidEnd < clearAt ≤ 1.
+    public static func glassGradientStops(notchHeight: CGFloat, shapeHeight: CGFloat) -> GlassGradientStops {
+        guard shapeHeight > 0, notchHeight.isFinite, shapeHeight.isFinite else {
+            return GlassGradientStops(solidEnd: 0, clearAt: glassClearLocation)
+        }
+        let solid = min(max(Double(notchHeight / shapeHeight), 0), 1 - glassMinimumFade)
+        let clear = min(max(glassClearLocation, solid + glassMinimumFade), 1)
+        return GlassGradientStops(solidEnd: solid, clearAt: clear)
+    }
 }

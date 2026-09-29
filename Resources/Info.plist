@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  SuperNotch Info.plist template (owner: FOUNDATION, see docs/SPEC.md B.1 and G.3).
+  Scripts/package_app.sh copies this file into SuperNotch.app/Contents/ and fills in the version keys:
+    CFBundleShortVersionString  numeric part of the version (1.2.3)
+    CFBundleVersion             build number
+    SNFullVersion               full version string (1.2.3-rc.1, 0.0.0-ci.42)
+    SNGitCommit                 short git commit hash
+  The values below are placeholders for a plain `swift build` run; never ship them.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>SuperNotch</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.snakez3101.supernotch</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>SuperNotch</string>
+    <key>CFBundleDisplayName</key>
+    <string>SuperNotch</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>0</string>
+    <key>SNFullVersion</key>
+    <string>0.0.0-dev</string>
+    <key>SNGitCommit</key>
+    <string>unknown</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>26.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>SuperNotch uses Apple Events to control Spotify (play, pause, skip, seek, now playing) and, when you click a Claude Code session, to bring the matching terminal window or the Claude app to the front.</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 SuperNotch contributors. Licensed under the Apache License, Version 2.0.</string>
+</dict>
+</plist>

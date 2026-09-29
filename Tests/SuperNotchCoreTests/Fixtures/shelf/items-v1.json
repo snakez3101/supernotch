@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "kind": "file",
+      "displayName": "Report.pdf",
+      "storedRelativePath": "11111111-1111-1111-1111-111111111111/Report.pdf",
+      "byteSize": 1024,
+      "addedAt": 780000000,
+      "pinned": false,
+      "originalPath": "/Users/me/Desktop/Report.pdf"
+    },
+    {
+      "id": "22222222-2222-2222-2222-222222222222",
+      "kind": "text",
+      "displayName": "Hello",
+      "text": "Hello world",
+      "addedAt": 780000100,
+      "pinned": true
+    },
+    {
+      "id": "33333333-3333-3333-3333-333333333333",
+      "kind": "link",
+      "displayName": "example.com",
+      "urlString": "https://example.com",
+      "addedAt": 779999000,
+      "pinned": false
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 import Foundation
 
-// CONTRACT FILE (SPEC §D.5). Owner: claude-core. Wire types of the hook → app socket protocol.
+// CONTRACT FILE (SPEC §D.7). Owner: claude-core. Wire types of the hook → app socket protocol.
 
 /// Claude Code hook event name (`hook_event_name`). Open set: unknown names round-trip unchanged.
 public struct HookEventName: RawRepresentable, Hashable, Sendable, Codable, CustomStringConvertible {
@@ -166,9 +166,44 @@ public struct HookContext: Codable, Sendable, Hashable {
             entrypoint: value("CLAUDE_CODE_ENTRYPOINT"),
             hostSessionID: value("CLAUDE_CODE_HOST_SESSION_ID"),
             claudeConfigDir: value("CLAUDE_CONFIG_DIR"),
-            isInternal: value(IPCConfig.internalMarkerEnvironmentKey) == "1",
-            isRemote: value("CLAUDE_CODE_REMOTE") == "true"
+            isInternal: Self.isTruthy(value(IPCConfig.internalMarkerEnvironmentKey)),
+            isRemote: Self.isTruthy(value("CLAUDE_CODE_REMOTE"))
         )
+    }
+
+    static func isTruthy(_ value: String?) -> Bool {
+        guard let value else { return false }
+        return ["1", "true", "yes"].contains(value.lowercased())
+    }
+
+    /// `CLAUDE_CODE_ENTRYPOINT` values used by Claude Desktop (Code tab, 3P build, Cowork).
+    public static let desktopEntrypoints: Set<String> = ["claude-desktop", "claude-desktop-3p", "local-agent"]
+    /// `CLAUDE_CODE_ENTRYPOINT` of the VS Code extension's chat panel.
+    public static let vscodeEntrypoint = "claude-vscode"
+
+    /// The session is hosted by Claude Desktop (entrypoint, inherited bundle id or `local_` host session id).
+    public var isDesktopHost: Bool {
+        if let entrypoint, Self.desktopEntrypoints.contains(entrypoint.lowercased()) { return true }
+        if bundleIdentifier == SessionHost.claudeDesktopBundleID { return true }
+        return hostSessionID?.hasPrefix("local_") == true
+    }
+
+    /// A GUI host that shows the conversation to the user even though it may drive the CLI with `-p` /
+    /// stream-json (Claude Desktop, the VS Code extension). Such sessions are never "headless".
+    public var isInteractiveHost: Bool {
+        isDesktopHost || entrypoint?.lowercased() == Self.vscodeEntrypoint
+    }
+
+    /// `claude -p`, Agent SDK and other non-interactive sessions (SPEC §E.2 `.hiddenHeadless`).
+    public var isHeadless: Bool {
+        if let entrypoint, entrypoint.lowercased().hasPrefix("sdk") { return true }
+        return isPrintMode && !isInteractiveHost
+    }
+
+    /// Whether the hook should hold the connection open for a PermissionRequest decision. Internal, remote
+    /// and headless sessions never get a card, so their hooks do not wait (Claude decides on its own).
+    public func shouldAwaitPermissionReply(for event: HookEventName, agentID: String?) -> Bool {
+        event.isBlocking && !isInternal && !isRemote && !isHeadless && agentID == nil
     }
 
     // Tolerant decoding: every key optional (older/newer hook binaries).
@@ -243,6 +278,20 @@ public struct HookEnvelope: Codable, Sendable, Hashable, Identifiable {
     /// Typed read-only view of `payload`.
     public var hook: HookPayload { HookPayload(payload) }
     public var sentDate: Date { Date(timeIntervalSince1970: sentAt) }
+
+    /// An envelope the app fabricates itself, e.g. a `SessionEnd` when Claude Desktop quit and took its
+    /// pid-less sessions with it (SPEC §E.3). Never expects a reply.
+    public static func synthetic(
+        _ event: HookEventName, sessionID: String, now: Date, fields: [(String, JSONValue)] = []
+    ) -> HookEnvelope {
+        var payload = JSONObject([
+            ("session_id", .string(sessionID)), ("hook_event_name", .string(event.rawValue)),
+        ])
+        for (key, value) in fields { payload[key] = value }
+        return HookEnvelope(
+            id: "synthetic-" + UUID().uuidString, sentAt: now.timeIntervalSince1970, event: event,
+            expectsReply: false, context: HookContext(hookVersion: "app"), payload: .object(payload))
+    }
 }
 
 /// App → hook reply for a blocking envelope (one NDJSON line on the same connection).

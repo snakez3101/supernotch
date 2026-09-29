@@ -1,0 +1,33 @@
+SuperNotch
+Copyright 2026 The SuperNotch contributors
+https://github.com/snakez3101/supernotch
+
+This product is licensed under the Apache License, Version 2.0 (see the LICENSE file).
+
+SuperNotch has no third-party package dependencies: it is built only on Apple's system frameworks (SwiftUI,
+AppKit, Foundation, Carbon) and the Swift standard library / swift-testing.
+
+SuperNotch is an independent project. It is not affiliated with, endorsed by or sponsored by Apple Inc.,
+Spotify AB or Anthropic PBC. "macOS", "AirDrop", "Liquid Glass" and "Apple Silicon" are trademarks of Apple Inc.;
+"Spotify" is a trademark of Spotify AB; "Claude" and "Claude Code" are trademarks of Anthropic PBC.
+
+--------------------------------------------------------------------------------------------------------------
+Third-party attributions
+--------------------------------------------------------------------------------------------------------------
+
+Parts of SuperNotch are adapted from the open-source projects below. Each entry names the project, its licence
+and what was adapted; the licence texts of MIT/BSD projects are reproduced in full underneath.
+
+<!-- ORCHESTRATOR: fill this section from the implementation agents' reports. One entry per adapted project,
+     in this shape (delete this comment when done):
+
+* <Project name> (<https://github.com/owner/repo>)
+  Licence: MIT | BSD-3-Clause | Apache-2.0
+  Copyright (c) <year> <holder>
+  Adapted in: <SuperNotch source file(s)>
+  What: <one line>
+
+     Then append the full licence text for every MIT/BSD project after the list. Apache-2.0 projects that ship
+     their own NOTICE file: copy that NOTICE's attribution lines here as well. -->
+
+(none recorded yet)

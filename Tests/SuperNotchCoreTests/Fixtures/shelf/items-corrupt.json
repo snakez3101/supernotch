@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "futureField": { "ignored": true },
+  "items": [
+    { "id": "44444444-4444-4444-4444-444444444444", "kind": "banana", "displayName": "?", "addedAt": 780000000, "pinned": false },
+    { "kind": "text", "displayName": "no id", "text": "x", "addedAt": 780000000, "pinned": false },
+    { "id": "55555555-5555-5555-5555-555555555555", "kind": "file", "displayName": "passwd", "storedRelativePath": "../../etc/passwd", "addedAt": 780000000, "pinned": false },
+    { "id": "66666666-6666-6666-6666-666666666666", "kind": "image", "displayName": "a.png", "storedRelativePath": "/abs/a.png", "addedAt": 780000000, "pinned": false },
+    { "id": "77777777-7777-7777-7777-777777777777", "kind": "folder", "displayName": "Stuff", "storedRelativePath": "77777777-7777-7777-7777-777777777777/Stuff", "addedAt": 780000500, "pinned": false, "extra": 42 },
+    { "id": "77777777-7777-7777-7777-777777777777", "kind": "text", "displayName": "dup", "text": "dup", "addedAt": 780000600, "pinned": false },
+    { "id": "88888888-8888-8888-8888-888888888888", "kind": "link", "displayName": "no url", "addedAt": 780000000, "pinned": false },
+    "not an object"
+  ]
+}

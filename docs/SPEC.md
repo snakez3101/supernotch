@@ -638,6 +638,105 @@ Automation permission is requested lazily, per host.
 * Views: `UsageBarsView` with two 3 pt bars, labelled "5h" and "7d", showing the percentage and the reset
   time on hover. It turns orange at the threshold and red at ≥ 95 %.
 
+### D.10 App wiring (Foundation clarification, additive; nothing above changes)
+
+§D.4/§D.5 left a few cross-stream entry points implicit. These are the exact names. The FOUNDATION files
+are real code; read them for details.
+
+**Provided by FOUNDATION** (`App/*`, `Shared/*`; use freely):
+
+```swift
+@Observable final class AppModel {                     // App/AppModel.swift
+    static private(set) var shared: AppModel?          // for AppKit glue only; views use @Environment
+    let paths: SuperNotchPaths
+    let settings: SettingsStore
+    let notch: NotchViewModel
+    let claude: ClaudeSessionsModel
+    let media: MediaModel
+    let shelf: ShelfModel
+    let clipboard: ClipboardModel
+    init(settings: SettingsStore = SettingsStore())    // builds settings → notch → claude → media → shelf → clipboard
+    func start(); func stop()                          // same order / reverse order
+    func inject<V: View>(_ view: V) -> some View       // .environment(AppModel) + all six models
+    func showSettings()                                // opens/focuses the Settings window
+    func showOnboarding()                              // "Run setup again" (Settings › General)
+    func quit()
+}
+
+@Observable final class SettingsStore {                // Shared/SettingsStore.swift
+    init(defaults: UserDefaults = .standard)
+    var settings: AppSettings                          // normalized + saved on every set (Bindable-friendly)
+    func update(_ change: (inout AppSettings) -> Void) // several fields, one save
+    func reset()                                       // defaults; keeps onboardingCompleted + launchAtLogin
+    func observe(_ handler: @escaping (_ old: AppSettings, _ new: AppSettings) -> Void) -> SettingsStore.ObserverToken
+}   // called synchronously after each real change; keep the token (cancel() or dropping it ends the observation)
+
+nonisolated enum Log { … }                             // §F.2 categories + `system`
+enum NotchSlots { … }                                  // §D.5 (+ closedWidthExtra helper, see below)
+enum DesignTokens { … }                                // Shared/DesignTokens.swift: colours, fonts, spacing, glass gradient
+struct HomeTabView: View { init() }
+```
+
+Every hierarchy built with `AppModel.inject(_:)` also carries `AppModel` itself, so a view may use
+`@Environment(AppModel.self)` (e.g. for `showOnboarding()`).
+
+**Provided by notch-shell** (FOUNDATION's `AppDelegate`/`SmokeTest` call exactly these):
+
+```swift
+final class NotchWindowController {                    // Notch/NotchWindowController.swift
+    init(appModel: AppModel)
+    func start()   // builds the NotchPanel hosting appModel.inject(NotchContainerView()); tracks screens, wake,
+                   // spaces and fullscreen; registers the global hotkeys (System/HotkeyCenter) from settings and
+                   // re-registers them on change: toggleNotchHotkey → appModel.notch.toggle() (focused),
+                   // clipboardHotkey → appModel.clipboard.toggleHistoryPanel()
+    func stop()    // orders the panel out, removes monitors/observers, unregisters hotkeys
+}
+struct SettingsView: View { init() }                   // Settings/SettingsView.swift: root of the Settings window (§A.10)
+struct OnboardingView: View { init() }                 // Onboarding/OnboardingView.swift: §A.11 pager
+```
+
+Lifecycle and windows (implemented in `App/AppDelegate.swift`):
+
+* Launch: `AppModel()` → `notch.openSettingsHandler = …` → `appModel.start()` → `NotchWindowController(appModel:)`
+  `.start()` → menu-bar item (§A.12) → onboarding if `!settings.onboardingCompleted`. Quit: controller `stop()`,
+  then `appModel.stop()`.
+* The Settings and onboarding windows are titled `NSWindow`s owned by `AppDelegate`, hosting
+  `appModel.inject(SettingsView())` / `appModel.inject(OnboardingView())`. The activation policy is `.regular`
+  while either is open and `.accessory` again when both are closed. The app has a standard main menu (App,
+  Edit, Window), so ⌘C/⌘V/⌘A/⌘W work in those windows.
+* Onboarding closes itself when `settings.onboardingCompleted` becomes `true` (the Done step sets it).
+  Closing the onboarding window with its close button also sets it (the wizard never blocks; it can be
+  re-run). "Run setup again" calls `appModel.showOnboarding()`; setting `onboardingCompleted = false` has the
+  same effect.
+* A second launch (Finder reopen, or a second process, via a distributed notification) opens Settings.
+
+**Slot composition rules** (`Shared/NotchSlots.swift`, `Shared/HomeTabView.swift`):
+
+* `NotchSlots.islandLeading()`: `MediaIslandArtwork()` in island mode while a track is loaded, else nothing.
+* `NotchSlots.islandTrailing()`: island mode: `MediaIslandVisualizer()` (only while a track is loaded,
+  `showVisualizer` is on and no Claude session is active; the dots win the 36 pt wing) followed by
+  `ClaudeIslandIndicator()`; invisible mode: `ClaudeIslandIndicator()` only. `ClaudeIslandIndicator` reads
+  `settings.closedMode` itself and, in invisible mode, draws only the usage-warning dot (or nothing).
+  Slot views size themselves (≤ wing width) and render nothing when they have nothing to show.
+* `NotchSlots.closedWidthExtra(settings:media:claude:)` (backed by the pure, tested
+  `NotchMetrics.closedWidthExtra(mode:hasTrack:hasActiveSessions:showsUsageWarning:)`) gives the shell the
+  `closedWidthExtra` for `NotchGeometry.size(for:closedWidthExtra:)`: island with content ⇒ 2 × 36;
+  otherwise usage warning ⇒ 2 × 14 (symmetric shape, the dot sits in the right wing); else 0.
+* `NotchSlots.tab(_:)` / `NotchSlots.peek(_:)` fill the area the shell gives them below the top band
+  (height N.h). The shell draws the tab icons and the gear in the top band and insets the slot area by
+  `NotchMetrics.contentPadding` on the left, right and bottom, so slot views add no outer padding of their
+  own. `peek(_:)` applies `.id(request.id)`, so a new request always gets fresh view state.
+* `HomeTabView`: `MediaHomeSection()` gets exactly 200 pt × column height (it shows its own "Open Spotify"
+  state); a hairline; `ClaudeHomeSection()` gets the rest at full column height and renders **both** the
+  session rows **and** `UsageBarsView` at its bottom (§A.5 diagram). `HomeTabView` does not add
+  `UsageBarsView` itself. If `spotifyEnabled` is off the Claude column takes the full width; if `claudeEnabled`
+  is off the music column stays 200 pt and the rest shows a hint. The overall size never changes.
+* Glass look (§A.3): `DesignTokens.GlassLook.gradient(notchHeight:shapeHeight:)` is the black→clear
+  `LinearGradient` (stops from the pure `NotchMetrics.glassGradientStops(notchHeight:shapeHeight:)`), and
+  `DesignTokens.GlassLook.glass(style:reduceTransparency:)` returns `.regular` or `.identity` for
+  `.glassEffect(_:in:)` (pure rule: `NotchStyle.usesGlass(reduceTransparency:)`). Animations:
+  `DesignTokens.Motion.open` / `.close` / `.contentFadeIn` (§A.2).
+
 ---
 
 ## E. Claude session state machine (claude-core, `SessionStore.apply`)

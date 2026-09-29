@@ -19,6 +19,12 @@ public enum NotchStyle: String, Codable, Sendable, CaseIterable {
     case glass
     /// Solid black (for Reduce Transparency or taste).
     case solidBlack
+
+    /// Whether peek/expanded use real Liquid Glass (`.regular`) or `.identity` over solid black (§A.3).
+    /// Reduce Transparency always wins.
+    public func usesGlass(reduceTransparency: Bool) -> Bool {
+        self == .glass && !reduceTransparency
+    }
 }
 
 /// Auto-cleanup for shelf items and clipboard history (pinned items never expire).
@@ -128,6 +134,18 @@ public struct AppSettings: Codable, Sendable, Hashable {
 
     public static let defaults = AppSettings()
 
+    /// Allowed clipboard history sizes (§A.10: 50–1000, default 200).
+    public static let clipboardLimitRange: ClosedRange<Int> = 50...1000
+
+    /// "Reset to defaults" (`SettingsStore.reset()`): everything back to its default, except state that
+    /// mirrors the system or the user's history rather than a preference (onboarding done, launch at login).
+    public func resetToDefaults() -> AppSettings {
+        var fresh = AppSettings()
+        fresh.onboardingCompleted = onboardingCompleted
+        fresh.launchAtLogin = launchAtLogin
+        return fresh
+    }
+
     // MARK: Tolerant Codable
 
     private enum CodingKeys: String, CodingKey {
@@ -231,7 +249,8 @@ public struct AppSettings: Codable, Sendable, Hashable {
         hoverCloseDelay = min(max(hoverCloseDelay, 0), 3)
         doneAutoCollapse = min(max(doneAutoCollapse, 1), 60)
         usageWarningThreshold = min(max(usageWarningThreshold, 0.5), 1)
-        clipboardLimit = min(max(clipboardLimit, 20), 1000)
+        let limits = Self.clipboardLimitRange
+        clipboardLimit = min(max(clipboardLimit, limits.lowerBound), limits.upperBound)
         if let dir = claudeConfigDirOverride, dir.trimmingCharacters(in: .whitespaces).isEmpty {
             claudeConfigDirOverride = nil
         }

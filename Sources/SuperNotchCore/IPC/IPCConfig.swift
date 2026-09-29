@@ -1,6 +1,6 @@
 import Foundation
 
-// CONTRACT FILE (SPEC §D.5). Owner: claude-core. Constants shared by the app and `supernotch-hook`.
+// CONTRACT FILE (SPEC §D.7). Owner: claude-core. Constants shared by the app and `supernotch-hook`.
 
 public enum IPCConfig {
     /// Wire protocol version (`v` field). Bump only with a migration plan: old hooks talk to new apps.
@@ -40,6 +40,31 @@ public enum IPCConfig {
 
     /// Upper bound for one NDJSON message (hook payloads can include large tool inputs).
     public static let maxMessageBytes = 4 * 1024 * 1024
+
+    /// Upper bound for the reply line the hook accepts from the app.
+    public static let maxReplyBytes = 1 * 1024 * 1024
+
+    /// Strings in a hook payload longer than this are truncated by the hook before sending
+    /// (`HookPayloadCompactor`). Keeps envelopes small even when `tool_input` holds a whole file.
+    public static let maxPayloadStringBytes = 16 * 1024
+
+    /// The hook stops reading stdin after this long (Claude Code always closes it; this only guards
+    /// against a caller that never does, so a hook can never hang a session).
+    public static let stdinReadTimeout: TimeInterval = 5
+
+    /// How long `supernotch-hook statusline` lets the user's original statusLine command run before it is
+    /// killed (its output is then dropped). SPEC §D.7 budgets 1 s; raised to 5 s because popular status
+    /// lines (ccstatusline via npx, git-heavy scripts) regularly need more, and a killed wrapper blanks the
+    /// user's status line. Claude Code itself cancels a stale run when a newer update starts.
+    public static let statusLineCommandTimeout: TimeInterval = 5
+
+    /// Argument that precedes the user's original statusLine command in our bridge command:
+    /// `'…/supernotch-hook' statusline --wrap '<original command>'`.
+    public static let statusLineWrapArgument = "--wrap"
+
+    /// Test/debug override (seconds) for `permissionReplyTimeout`, honoured by the hook only when it parses
+    /// to a value in 0.05…`permissionReplyTimeout`.
+    public static let replyTimeoutEnvironmentKey = "SUPERNOTCH_HOOK_REPLY_TIMEOUT"
 }
 
 /// Resolves the hook socket path identically in the app and in `supernotch-hook`.
