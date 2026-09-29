@@ -77,9 +77,6 @@ private struct OnboardingFeatureRow: View {
 struct OnboardingDoneStep: View {
     @Environment(SettingsStore.self) private var settingsStore
 
-    @State private var loginState: NotchLoginItem.State = .disabled
-    @State private var loginError: String?
-
     var body: some View {
         let settings = settingsStore.settings
         VStack(spacing: 14) {
@@ -95,20 +92,8 @@ struct OnboardingDoneStep: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Toggle("Launch SuperNotch at login", isOn: launchAtLoginBinding)
-                .toggleStyle(.switch)
-                .disabled(loginState == .unavailable)
-            if let loginError {
-                Text(loginError)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .multilineTextAlignment(.center)
-            } else if loginState == .requiresApproval {
-                Button("Allow in System Settings › Login Items") {
-                    NotchLoginItem.openSystemSettings()
-                }
-                .buttonStyle(.link)
-                .font(.caption)
+            VStack(spacing: 6) {
+                SettingsLaunchAtLoginControl(title: "Launch SuperNotch at login", layout: .centered)
             }
 
             GroupBox {
@@ -140,21 +125,6 @@ struct OnboardingDoneStep: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear {
-            loginState = NotchLoginItem.state
-        }
-    }
-
-    private var launchAtLoginBinding: Binding<Bool> {
-        Binding(
-            get: { loginState == .enabled || loginState == .requiresApproval },
-            set: { enabled in
-                loginError = NotchLoginItem.setEnabled(enabled)
-                if loginError == nil {
-                    settingsStore.settings.launchAtLogin = enabled
-                }
-                loginState = NotchLoginItem.state
-            })
     }
 }
 

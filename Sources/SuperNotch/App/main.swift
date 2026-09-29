@@ -1,7 +1,7 @@
 // Owner: FOUNDATION (SPEC §B.1, §G.2).
 //
-// Entry point. SuperNotch is an accessory app (LSUIElement in Info.plist): no Dock icon, no main menu,
-// except while the Settings or onboarding window is open (see AppDelegate).
+// Entry point. SuperNotch is an accessory app (LSUIElement in Info.plist) at all times: no Dock icon, no menu
+// bar and no ⌘-Tab entry, not even while the Settings or onboarding window is open (see AppDelegate).
 import AppKit
 
 MainActor.assumeIsolated {

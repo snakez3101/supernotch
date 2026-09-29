@@ -10,38 +10,21 @@ struct SettingsGeneralPane: View {
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(AppModel.self) private var appModel
 
-    @State private var loginState: NotchLoginItem.State = .disabled
-    @State private var loginError: String?
     @State private var confirmsReset = false
 
     var body: some View {
         @Bindable var store = settingsStore
         Form {
             Section {
-                Toggle("Launch at login", isOn: launchAtLoginBinding)
-                    .disabled(loginState == .unavailable)
-                if loginState == .requiresApproval {
-                    LabeledContent("Allow SuperNotch in System Settings") {
-                        Button("Open Login Items") {
-                            NotchLoginItem.openSystemSettings()
-                        }
-                    }
-                }
-                if let loginError {
-                    Text(loginError)
-                        .font(.callout)
-                        .foregroundStyle(.red)
-                }
+                SettingsLaunchAtLoginControl(title: "Launch at login", layout: .form)
                 Toggle("Show menu-bar icon", isOn: $store.settings.showMenuBarIcon)
             } header: {
                 Text("Startup")
             } footer: {
-                if loginState == .unavailable {
-                    Text("Launch at login works once SuperNotch is in the Applications folder.")
-                } else if !store.settings.showMenuBarIcon {
+                if !store.settings.showMenuBarIcon {
                     Text(
-                        "Without the menu-bar icon, open Settings with the gear in the notch or by launching "
-                            + "SuperNotch again.")
+                        "Without the menu-bar icon, open Settings with the gear in the notch (\(notchHotkeyHint)) "
+                            + "or by launching SuperNotch again.")
                 }
             }
 
@@ -63,9 +46,6 @@ struct SettingsGeneralPane: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear {
-            refreshLoginState()
-        }
         .confirmationDialog("Reset all settings to their defaults?", isPresented: $confirmsReset) {
             Button("Reset", role: .destructive) {
                 settingsStore.reset()
@@ -77,20 +57,12 @@ struct SettingsGeneralPane: View {
         }
     }
 
-    private var launchAtLoginBinding: Binding<Bool> {
-        Binding(
-            get: { loginState == .enabled || loginState == .requiresApproval },
-            set: { enabled in
-                loginError = NotchLoginItem.setEnabled(enabled)
-                if loginError == nil {
-                    settingsStore.settings.launchAtLogin = enabled
-                }
-                refreshLoginState()
-            })
-    }
-
-    private func refreshLoginState() {
-        loginState = NotchLoginItem.state
+    /// "⌥⌘N opens it", or how to open it when the notch shortcut is off.
+    private var notchHotkeyHint: String {
+        if let combo = settingsStore.settings.toggleNotchHotkey {
+            return "\(combo.description) opens it"
+        }
+        return "rest the pointer on it or click it"
     }
 }
 

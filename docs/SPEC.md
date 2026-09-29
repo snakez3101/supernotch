@@ -180,7 +180,7 @@ Other rules:
   (the panel is ordered out). Everything else (hooks, clipboard) keeps running.
 * Rebuild on `NSApplication.didChangeScreenParametersNotification` and `NSWorkspace.didWakeNotification`.
 
-### A.10 Settings window (titled `NSWindow`; activation policy `.regular` while open)
+### A.10 Settings window (titled `NSWindow`; the app stays `.accessory`: never a Dock icon or ⌘-Tab entry)
 
 Sidebar sections:
 
@@ -810,15 +810,23 @@ Lifecycle and windows (implemented in `App/AppDelegate.swift`):
 * Launch: `AppModel()` → `notch.openSettingsHandler = …` → `appModel.start()` → `NotchWindowController(appModel:)`
   `.start()` → menu-bar item (§A.12) → onboarding if `!settings.onboardingCompleted`. Quit: controller `stop()`,
   then `appModel.stop()`.
-* The Settings and onboarding windows are titled `NSWindow`s owned by `AppDelegate`, hosting
-  `appModel.inject(SettingsView())` / `appModel.inject(OnboardingView())`. The activation policy is `.regular`
-  while either is open and `.accessory` again when both are closed. The app has a standard main menu (App,
-  Edit, Window), so ⌘C/⌘V/⌘A/⌘W work in those windows.
+* The Settings and onboarding windows are titled `NSWindow`s (`SettingsHostWindow`) owned by `AppDelegate`,
+  hosting `appModel.inject(SettingsView())` / `appModel.inject(OnboardingView())`. The activation policy is
+  `.accessory` at all times (no Dock icon, no ⌘-Tab entry, never `.regular`); the windows are shown with
+  `NSApp.activate()` + `makeKeyAndOrderFront` + `orderFrontRegardless`, and are not miniaturizable. The hidden
+  main menu (App, Edit, Window; no Hide/Minimize) and `SettingsHostWindow` route ⌘C/⌘V/⌘A/⌘Z/⌘W. Closing the
+  last of them hands the focus back to the previously frontmost app.
+* Launch at login (`System/NotchLoginItem`, pure parts in Core `NotchLoginAgent`): `SMAppService.mainApp`
+  first (`.requiresApproval` → hint + "Open Login Items"); if it cannot be registered, a per-user LaunchAgent
+  `~/Library/LaunchAgents/io.github.snakez3101.supernotch.plist` (this executable + `--launched-at-login`,
+  `RunAtLoad`, Aqua, not bootstrapped now). The toggle shows the real state; nothing changes in smoke-test mode.
 * Onboarding closes itself when `settings.onboardingCompleted` becomes `true` (the Done step sets it).
   Closing the onboarding window with its close button also sets it (the wizard never blocks; it can be
   re-run). "Run setup again" calls `appModel.showOnboarding()`; setting `onboardingCompleted = false` has the
   same effect.
-* A second launch (Finder reopen, or a second process, via a distributed notification) opens Settings.
+* A second launch (Finder reopen, or a second process, via a distributed notification) opens Settings. The
+  younger of two running copies quits at once (`NotchInstanceGuard`); a copy started with
+  `--launched-at-login` quits silently.
 
 **Slot composition rules** (`Shared/NotchSlots.swift`, `Shared/HomeTabView.swift`):
 

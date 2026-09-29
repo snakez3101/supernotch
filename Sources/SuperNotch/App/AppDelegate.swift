@@ -1,10 +1,14 @@
 // Owner: FOUNDATION (SPEC §A.10–§A.12, §D.10).
 //
 // Launch sequence, notch window, menu-bar item, Settings and onboarding windows, single instance.
-// * The app is an accessory (LSUIElement) app. While the Settings or onboarding window is open the activation
-//   policy is `.regular` (Dock icon, main menu, ⌘C/⌘V in text fields); it returns to `.accessory` when both
-//   are closed.
-// * A second launch (Finder reopen or a second process) opens Settings (§A.12).
+// * The app is an accessory (LSUIElement) app at ALL times: no Dock icon and no ⌘-Tab entry, not even while the
+//   Settings or onboarding window is open (the activation policy is never switched to `.regular`). Those windows
+//   are brought forward by activating the app, which accessory apps may do; the hidden main menu still routes
+//   ⌘C/⌘V/⌘A/⌘Z/⌘W, and `SettingsHostWindow` routes the editing shortcuts itself as a fallback.
+// * Settings stays reachable without a Dock icon: menu-bar item (§A.12), the gear in the expanded notch
+//   (⌥⌘N or hover), or launching SuperNotch again.
+// * A second launch (Finder reopen or a second process) opens Settings (§A.12); a copy started by the
+//   launch-at-login LaunchAgent (`--launched-at-login`) quits silently instead.
 import AppKit
 import SuperNotchCore
 import SwiftUI
@@ -22,6 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var onboardingWindow: NSWindow?
     private var settingsObservation: SettingsStore.ObserverToken?
     private var isObservingSecondLaunch = false
+    /// The app that was frontmost before Settings/onboarding was brought forward; gets focus back when both close.
+    private var previousFrontmostApp: NSRunningApplication?
 
     // MARK: - NSApplicationDelegate
 
@@ -29,8 +35,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if handOffToRunningInstance() { return }
 
         let application = NSApplication.shared
-        application.setActivationPolicy(.accessory)
+        application.setActivationPolicy(.accessory)  // never changed afterwards: no Dock icon, no ⌘-Tab entry
         application.mainMenu = makeMainMenu()
+        NotchLoginItem.reconcileAtLaunch()
 
         let model = AppModel()
         appModel = model
@@ -85,16 +92,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     // MARK: - Single instance
 
-    /// If another SuperNotch with our bundle id is running, ask it to open Settings and quit this process.
+    /// If an older SuperNotch with our bundle id is running, quit this process right away. A user launch also asks
+    /// the running copy to open Settings; a copy started by the launch-at-login LaunchAgent quits silently.
     private func handOffToRunningInstance() -> Bool {
         guard let bundleID = Bundle.main.bundleIdentifier else { return false }  // unbundled `swift run`
         let ownPID = ProcessInfo.processInfo.processIdentifier
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
             .filter { $0.processIdentifier != ownPID && !$0.isTerminated }
+            .map { NotchInstanceGuard.Instance(pid: $0.processIdentifier, launchDate: $0.launchDate) }
         guard !others.isEmpty else { return false }
-        Log.app.info("SuperNotch is already running; asking it to open Settings")
-        DistributedNotificationCenter.default().postNotificationName(
-            Self.showSettingsNotification, object: nil, userInfo: nil, deliverImmediately: true)
+        let current = NotchInstanceGuard.Instance(pid: ownPID, launchDate: NSRunningApplication.current.launchDate)
+        guard NotchInstanceGuard.shouldYield(current: current, others: others) else {
+            Log.app.info("Another SuperNotch started at the same time; this older copy keeps running")
+            return false
+        }
+        if NotchLoginItem.wasLaunchedByLaunchAgent {
+            Log.app.info("SuperNotch is already running; the copy started at login quits")
+        } else {
+            Log.app.info("SuperNotch is already running; asking it to open Settings")
+            DistributedNotificationCenter.default().postNotificationName(
+                Self.showSettingsNotification, object: nil, userInfo: nil, deliverImmediately: true)
+        }
         NSApplication.shared.terminate(nil)
         return true
     }
@@ -233,9 +251,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         Log.app.info("Opening Settings")
         let hosting = NSHostingController(rootView: AnyView(model.inject(SettingsView())))
         hosting.sizingOptions = [.minSize]
-        let window = NSWindow(contentViewController: hosting)
+        let window = SettingsHostWindow(contentViewController: hosting)
         window.title = "SuperNotch Settings"
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        // Not miniaturizable: a minimized window would sit in the Dock, and SuperNotch has no Dock presence.
+        window.styleMask = [.titled, .closable, .resizable]
         window.setContentSize(NSSize(width: 720, height: 520))
         window.isReleasedWhenClosed = false
         window.tabbingMode = .disallowed
@@ -267,7 +286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
         let hosting = NSHostingController(rootView: AnyView(model.inject(OnboardingView())))
         hosting.sizingOptions = [.minSize]
-        let window = NSWindow(contentViewController: hosting)
+        let window = SettingsHostWindow(contentViewController: hosting)
         window.title = "Welcome to SuperNotch"
         window.styleMask = [.titled, .closable]
         window.setContentSize(NSSize(width: 560, height: 460))
@@ -299,46 +318,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             }
         }
         Task { @MainActor [weak self] in
-            self?.restoreAccessoryPolicyIfIdle()
+            self?.returnFocusIfIdle()
         }
     }
 
     // MARK: - Window helpers
 
+    /// Shows `window` in front and makes it key, WITHOUT a Dock icon: the app stays `.accessory` (accessory apps
+    /// can be activated; they only have no Dock tile, menu bar or ⌘-Tab entry). `orderFrontRegardless` keeps the
+    /// window visible even if the system declines the (cooperative) activation; a click then focuses it.
     private func bringToFront(_ window: NSWindow) {
         let application = NSApplication.shared
-        if application.activationPolicy() != .regular {
-            application.setActivationPolicy(.regular)
+        if application.activationPolicy() != .accessory {
+            application.setActivationPolicy(.accessory)
         }
-        window.makeKeyAndOrderFront(nil)
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        if !application.isActive, let frontmost = NSWorkspace.shared.frontmostApplication,
+            frontmost.processIdentifier != ownPID
+        {
+            previousFrontmostApp = frontmost
+        }
         application.activate()
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
     }
 
-    private func restoreAccessoryPolicyIfIdle() {
+    /// When Settings and onboarding are both closed, hand the focus back to the app the user came from, so the
+    /// keyboard does not stay with a SuperNotch that shows no window.
+    private func returnFocusIfIdle() {
         guard settingsWindow == nil, onboardingWindow == nil else { return }
-        NSApplication.shared.setActivationPolicy(.accessory)
+        let previous = previousFrontmostApp
+        previousFrontmostApp = nil
+        guard NSApplication.shared.isActive, let previous, !previous.isTerminated else { return }
+        _ = previous.activate(options: [])
     }
 
-    // MARK: - Main menu (only visible while a window is open)
+    // MARK: - Main menu (never shown: accessory app; its key equivalents work while Settings/onboarding is key)
 
     private func makeMainMenu() -> NSMenu {
         let mainMenu = NSMenu(title: "Main")
 
+        // No "Hide" items: ⌘H would also hide the notch panel, and there is no Dock icon to unhide it.
         let appMenu = NSMenu(title: "SuperNotch")
-        appMenu.addItem(
-            withTitle: "About SuperNotch", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
-            keyEquivalent: "")
-        appMenu.addItem(NSMenuItem.separator())
         let preferences = appMenu.addItem(
             withTitle: "Settings…", action: #selector(showSettingsFromMenu(_:)), keyEquivalent: ",")
         preferences.target = self
-        appMenu.addItem(NSMenuItem.separator())
-        appMenu.addItem(withTitle: "Hide SuperNotch", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        let hideOthers = appMenu.addItem(
-            withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
-        hideOthers.keyEquivalentModifierMask = [.command, .option]
-        appMenu.addItem(
-            withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(
             withTitle: "Quit SuperNotch", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -359,9 +383,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         editItem.submenu = editMenu
         mainMenu.addItem(editItem)
 
+        // No "Minimize": a minimized window would appear in the Dock.
         let windowMenu = NSMenu(title: "Window")
-        windowMenu.addItem(
-            withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
         windowItem.submenu = windowMenu
