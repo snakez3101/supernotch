@@ -73,6 +73,13 @@ struct ClaudeCapsuleButtonStyle: ButtonStyle {
 
 /// Text formatting for the Claude views. Pure, so it can be used anywhere.
 nonisolated enum ClaudeFormat {
+    /// "/Users/me/.claude" → "~/.claude".
+    static func abbreviatedPath(_ path: String) -> String {
+        let home = NSHomeDirectory()
+        guard !home.isEmpty, home != "/", path == home || path.hasPrefix(home + "/") else { return path }
+        return "~" + path.dropFirst(home.count)
+    }
+
     /// "now", "2m", "1h", "3d".
     static func shortElapsed(since date: Date, now: Date) -> String {
         let seconds = max(0, now.timeIntervalSince(date))

@@ -3,8 +3,8 @@
 // * Drag out: an AppKit `NSDraggingSource` hands the REAL stored file URLs to the destination (SwiftUI's
 //   `.draggable`/`.onDrag` would hand over a temporary copy, Apple forum 837005). Copy semantics only; the whole
 //   selection travels when the drag starts on a selected tile. The notch is held open during the drag.
-// * Click selects (⌘ toggles, ⇧ extends), double-click opens, right-click shows the context menu, space shows
-//   Quick Look, ⌘⌫ removes, ⌘C copies, ⌘A selects all (keys need the panel to be key, i.e. after a click).
+// * Click selects (⌘ toggles, ⇧ extends), double-click / space show Quick Look, Return opens, right-click shows
+//   the context menu, ⌘⌫ removes, ⌘C copies, ⌘A selects all (keys need the panel to be key, i.e. after a click).
 import AppKit
 import SuperNotchCore
 import SwiftUI
@@ -65,7 +65,7 @@ final class ShelfTileInteractionNSView: NSView, NSDraggingSource {
         defer { mouseDownEvent = nil }
         guard !didStartDrag, let shelf else { return }
         if event.clickCount >= 2 {
-            shelf.open(id: itemID)
+            shelf.primaryAction(id: itemID)
             return
         }
         let flags = event.modifierFlags

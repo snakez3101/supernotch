@@ -828,7 +828,7 @@ nonisolated enum ClaudeHookOperations {
             extraStatuses[extra.configDirectory] = extraStatus
         }
         return ClaudeSetupResult(
-            status: status, extraStatuses: extraStatuses, preview: installer.preview(spec: spec),
+            status: status, extraStatuses: extraStatuses, preview: installer.preview(for: primary, spec: spec),
             version: cli.version?.description, executablePath: cli.executable, message: message)
     }
 

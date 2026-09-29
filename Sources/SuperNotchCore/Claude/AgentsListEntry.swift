@@ -103,10 +103,10 @@ public struct AgentsListEntry: Codable, Sendable, Hashable {
     }
 
     /// The needs-input kind for `status == "waiting"` / `state == "blocked"`; nil when the wait is not the
-    /// session asking the user (e.g. the user opened a dialog themselves).
+    /// session asking the user (the user opened a dialog themselves, or it waits on a worker).
     public var needsInputKind: NeedsInputKind? {
         let waiting = waitingFor?.lowercased() ?? ""
-        if waiting.contains("dialog") { return nil }
+        if waiting.contains("dialog") || waiting.contains("worker") { return nil }
         if waiting.contains("permission") || waiting.contains("sandbox") { return .permission }
         if waiting.contains("input") || waiting.contains("question") { return .question }
         return .other

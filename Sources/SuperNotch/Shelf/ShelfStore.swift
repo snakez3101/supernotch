@@ -202,6 +202,15 @@ nonisolated final class ShelfStore: @unchecked Sendable {
             Log.shelf.error("Could not store a dropped file: \(reason, privacy: .public)")
             return .failure(ShelfStoreError(fileName: originalName, reason: reason))
         }
+        if move {
+            // Received promises arrive in their own incoming folder; drop it once it is empty.
+            let parent = source.deletingLastPathComponent()
+            if parent.deletingLastPathComponent().standardizedFileURL == incomingDirectory.standardizedFileURL,
+                (try? fileManager.contentsOfDirectory(atPath: parent.path))?.isEmpty == true
+            {
+                try? fileManager.removeItem(at: parent)
+            }
+        }
         let item = describe(
             destination, id: id, relativePath: relative, displayName: originalName,
             originalPath: move ? nil : source.path, now: now)
@@ -260,7 +269,10 @@ nonisolated final class ShelfStore: @unchecked Sendable {
             })
         if let names = try? fileManager.contentsOfDirectory(atPath: shelfDirectory.path) {
             for name in names where UUID(uuidString: name) != nil && !referenced.contains(name) {
-                try? fileManager.removeItem(at: shelfDirectory.appendingPathComponent(name, isDirectory: true))
+                let url = shelfDirectory.appendingPathComponent(name, isDirectory: true)
+                // Skip very recent folders: an import may have finished after the caller took its snapshot.
+                guard age(of: url) > 600 else { continue }
+                try? fileManager.removeItem(at: url)
             }
         }
         // Promise and share leftovers from earlier runs (anything older than an hour).
@@ -268,11 +280,15 @@ nonisolated final class ShelfStore: @unchecked Sendable {
             guard let names = try? fileManager.contentsOfDirectory(atPath: folder.path) else { continue }
             for name in names {
                 let url = folder.appendingPathComponent(name, isDirectory: true)
-                let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
-                    .contentModificationDate ?? .distantPast
-                if Date().timeIntervalSince(modified) > 3_600 { try? fileManager.removeItem(at: url) }
+                if age(of: url) > 3_600 { try? fileManager.removeItem(at: url) }
             }
         }
+    }
+
+    /// Seconds since the item was last modified (a huge value when unknown).
+    private func age(of url: URL) -> TimeInterval {
+        let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        return Date().timeIntervalSince(modified ?? .distantPast)
     }
 
     private func makeFolderSync(in parent: URL) -> URL? {

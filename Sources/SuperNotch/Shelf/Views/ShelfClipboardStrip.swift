@@ -48,7 +48,7 @@ struct ShelfClipboardStrip: View {
                 .foregroundStyle(DesignTokens.Colors.secondaryText)
                 .padding(.horizontal, DesignTokens.Spacing.s)
                 .frame(height: 20)
-                .background(Capsule().fill(DesignTokens.Colors.controlFill))
+                .background(DesignTokens.Colors.controlFill, in: Capsule())
                 .contentShape(Capsule())
             }
             .buttonStyle(.plain)
@@ -80,8 +80,8 @@ private struct ShelfClipboardChip: View {
             .padding(.horizontal, DesignTokens.Spacing.s)
             .frame(maxWidth: 104, minHeight: 20, maxHeight: 20, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: DesignTokens.Radius.small + 1, style: .continuous)
-                    .fill(isHovering ? DesignTokens.Colors.selectedFill : DesignTokens.Colors.controlFill))
+                isHovering ? DesignTokens.Colors.selectedFill : DesignTokens.Colors.controlFill,
+                in: RoundedRectangle(cornerRadius: DesignTokens.Radius.small + 1, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

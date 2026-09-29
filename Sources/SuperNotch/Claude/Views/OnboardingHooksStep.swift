@@ -132,6 +132,6 @@ struct OnboardingHooksStep: View {
     }
 
     private func abbreviated(_ path: String) -> String {
-        (path as NSString).abbreviatingWithTildeInPath
+        ClaudeFormat.abbreviatedPath(path)
     }
 }

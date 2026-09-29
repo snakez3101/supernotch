@@ -66,6 +66,15 @@ public struct ClaudeVersion: Sendable, Hashable, Comparable, CustomStringConvert
 
     public var description: String { components.map(String.init).joined(separator: ".") }
 
+    /// "2.1" == "2.1.0" (consistent with `<`).
+    public static func == (lhs: ClaudeVersion, rhs: ClaudeVersion) -> Bool { !(lhs < rhs) && !(rhs < lhs) }
+
+    public func hash(into hasher: inout Hasher) {
+        var trimmed = components
+        while trimmed.count > 1, trimmed.last == 0 { trimmed.removeLast() }
+        hasher.combine(trimmed)
+    }
+
     public static func < (lhs: ClaudeVersion, rhs: ClaudeVersion) -> Bool {
         let count = max(lhs.components.count, rhs.components.count)
         for index in 0..<count {

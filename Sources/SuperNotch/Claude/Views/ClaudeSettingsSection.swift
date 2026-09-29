@@ -128,7 +128,7 @@ struct ClaudeSettingsSection: View {
     }
 
     private func abbreviated(_ path: String) -> String {
-        (path as NSString).abbreviatingWithTildeInPath
+        ClaudeFormat.abbreviatedPath(path)
     }
 }
 
@@ -148,7 +148,7 @@ private struct ClaudeHookSettingsGroup: View {
                     .foregroundStyle(.secondary)
             }
             LabeledContent("Settings file") {
-                Text((claude.settingsFilePath as NSString).abbreviatingWithTildeInPath)
+                Text(ClaudeFormat.abbreviatedPath(claude.settingsFilePath))
                     .textSelection(.enabled)
                     .foregroundStyle(.secondary)
             }
@@ -178,11 +178,11 @@ private struct ClaudeHookSettingsGroup: View {
                     Button("Install there too") { claude.installHooks(inConfigDirectory: directory) }
                         .disabled(claude.isHookOperationRunning)
                 } label: {
-                    Text("Also found \((directory as NSString).abbreviatingWithTildeInPath)")
+                    Text("Also found \(ClaudeFormat.abbreviatedPath(directory))")
                 }
             }
             ForEach(claude.extraConfigStatuses.keys.sorted(), id: \.self) { directory in
-                LabeledContent((directory as NSString).abbreviatingWithTildeInPath) {
+                LabeledContent(ClaudeFormat.abbreviatedPath(directory)) {
                     ClaudeHookStatusLabel(status: claude.extraConfigStatuses[directory] ?? .unknown)
                 }
             }

@@ -1,0 +1,17 @@
+{
+  "hook_event_name": "Status",
+  "session_id": "0d6f1c2e-1111-4a5b-8c9d-000000000001",
+  "session_name": "a11y login",
+  "transcript_path": "/Users/me/.claude/projects/-Users-me-app/0d6f1c2e-1111-4a5b-8c9d-000000000001.jsonl",
+  "cwd": "/Users/me/app",
+  "model": { "id": "claude-opus-5", "display_name": "Opus 5" },
+  "workspace": { "current_dir": "/Users/me/app", "project_dir": "/Users/me/app" },
+  "version": "2.1.284",
+  "cost": { "total_cost_usd": 0.42, "total_duration_ms": 45000 },
+  "context_window": { "used_percentage": 41.6, "remaining_percentage": 58.4, "current_usage": null },
+  "rate_limits": {
+    "five_hour": { "used_percentage": 82.5, "resets_at": 1790003600 },
+    "seven_day": { "used_percentage": 12, "resets_at": 1790400000 },
+    "spend_limit": { "used_percentage": 101.3, "resets_at": 1792000000 }
+  }
+}

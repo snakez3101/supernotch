@@ -92,8 +92,9 @@ struct HookSettingsMergerTests {
         let user = #"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"say hi"}]}],"PreCompact":[]}}"#
         let installed = try install(user)
         let removed = try HookSettingsMerger.uninstall(from: installed.settings, manifest: nil)
-        // Our arrays are gone; the user's (even an empty one) stay; the wrapped statusLine is unwrapped (none).
-        #expect(removed.serialized() == #"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"say hi"}]}],"PreCompact":[]}}"#)
+        // Without a manifest every array that only held our entries goes (an empty array means the same as
+        // none); user entries stay; our bridge had nothing to wrap, so the statusLine key disappears.
+        #expect(removed.serialized() == #"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"say hi"}]}]}}"#)
     }
 
     @Test func refusesInvalidOrUnexpectedDocuments() throws {
@@ -235,15 +236,15 @@ struct HookSettingsMergerTests {
     }
 
     @Test func backupPathsAndHelpers() throws {
-        let date = Date(timeIntervalSince1970: 1_790_000_000)  // 2026-09-21T13:33:20Z
+        let date = Date(timeIntervalSince1970: 1_790_000_000)  // 2026-09-21T14:13:20Z
         #expect(
             HookSettingsMerger.backupFileName(settingsFile: "/Users/me/.claude/settings.json", date: date)
-                == "settings.json.2026-09-21T13-33-20Z.bak")
+                == "settings.json.2026-09-21T14-13-20Z.bak")
         #expect(
             HookSettingsMerger.backupPath(
                 directory: "/Users/me/Library/Application Support/SuperNotch/Backups/", settingsFile: "/w/.claude-work/settings.json",
                 date: date)
-                == "/Users/me/Library/Application Support/SuperNotch/Backups/.claude-work.settings.json.2026-09-21T13-33-20Z.bak")
+                == "/Users/me/Library/Application Support/SuperNotch/Backups/.claude-work.settings.json.2026-09-21T14-13-20Z.bak")
         #expect(HookSettingsMerger.hooksDisabled(in: try JSONValue.parse(#"{"disableAllHooks":true}"#)))
         #expect(!HookSettingsMerger.hooksDisabled(in: nil))
         let preview = HookSettingsMerger.previewEntries(spec: spec, originalStatusLineCommand: "sl.sh")

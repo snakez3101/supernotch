@@ -43,8 +43,8 @@ public enum ClipboardContentClassifier {
     public static let imageTypes: [String] = ["public.png", "public.tiff", "public.jpeg", "public.heic"]
     /// Rich text types; their presence means "this is text, even if an image rendition is attached".
     public static let richTextTypes: Set<String> = ["public.rtf", "public.html", "com.apple.flat-rtfd"]
-    /// Text longer than this (UTF-8 bytes) is not recorded (keeps the history file small).
-    public static let defaultMaxTextBytes = 1_000_000
+    /// Text longer than this (UTF-8 bytes) is not recorded (keeps the history file small: 1000 entries at most).
+    public static let defaultMaxTextBytes = 256 * 1024
 
     /// The first of `imageTypes` contained in `types`.
     public static func preferredImageType(in types: [String]) -> String? {

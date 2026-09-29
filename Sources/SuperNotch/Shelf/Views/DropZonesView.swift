@@ -47,7 +47,7 @@ private struct ShelfDropZoneTile: View {
                 .foregroundStyle(DesignTokens.Colors.tertiaryText)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(shape.fill(isTargeted ? DesignTokens.Colors.dropHighlight : DesignTokens.Colors.controlFill))
+        .background(isTargeted ? DesignTokens.Colors.dropHighlight : DesignTokens.Colors.controlFill, in: shape)
         .overlay {
             shape.strokeBorder(
                 isTargeted ? DesignTokens.Colors.accent : DesignTokens.Colors.hairline,

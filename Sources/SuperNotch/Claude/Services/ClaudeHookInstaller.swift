@@ -75,13 +75,17 @@ nonisolated struct ClaudeHookInstaller: Sendable {
             wrapStatusLine: wrapStatusLine && target.isPrimary)
     }
 
-    /// The exact JSON our entries add, as they would appear in an empty settings.json (onboarding preview).
-    func preview(spec: HookInstallSpec) -> String {
-        guard
-            let result = try? HookSettingsMerger.install(
-                spec: spec, into: nil, previousManifest: nil, settingsFile: "", appVersion: appVersion, now: Date())
-        else { return "" }
-        return result.settings.serialized(pretty: true)
+    /// Exactly the JSON our entries add (onboarding / settings preview), incl. the wrapped status line.
+    func preview(for target: ClaudeHookInstallTarget, spec: HookInstallSpec) -> String {
+        let settings = (try? readSettings(at: settingsURL(for: target))).flatMap { try? parse($0) }
+        var original: String?
+        if let status = settings?["statusLine"], !HookSettingsMerger.isOurs(status, marker: spec.marker) {
+            original = status["command"]?.stringValue
+        } else {
+            original = loadManifest(at: target.manifestPath)?.originalStatusLineCommand
+        }
+        return HookSettingsMerger.previewEntries(spec: spec, originalStatusLineCommand: original)
+            .serialized(pretty: true)
     }
 
     // MARK: - Status
@@ -99,10 +103,16 @@ nonisolated struct ClaudeHookInstaller: Sendable {
         case .notInstalled:
             return .notInstalled
         case .installed:
-            return binaryPresent ? .installed : .needsRepair("The hook helper is missing. Repair to restore it.")
+            guard binaryPresent else { return .needsRepair("The hook helper is missing. Repair to restore it.") }
+            if HookSettingsMerger.hooksDisabled(in: settings) {
+                return .needsRepair(
+                    "Claude Code runs no hooks while \"disableAllHooks\" is set in settings.json. Remove it to use "
+                        + "SuperNotch.")
+            }
+            return .installed
         case .needsRepair(let missing):
             if missing.isEmpty {
-                return .needsRepair("The status line bridge is not installed.")
+                return .needsRepair("The status line bridge or a duplicate entry needs an update.")
             }
             let names = missing.map(\.rawValue).joined(separator: ", ")
             return .needsRepair("Missing or outdated hooks: \(names).")
@@ -134,7 +144,7 @@ nonisolated struct ClaudeHookInstaller: Sendable {
             let backup = try backUp(original, target: target, now: now)
             // Re-read right before writing: if Claude Code or the user changed the file meanwhile, re-plan.
             guard try readSettings(at: url) == original else { continue }
-            try atomicWrite(result.settings.serializedData(pretty: true), to: url)
+            try atomicWrite(HookSettingsMerger.serialize(result.settings), to: url)
             try writeManifest(result.manifest, to: target.manifestPath)
             return ClaudeHookInstallOutcome(status: .installed, message: "Hooks installed.", backupPath: backup)
         }
@@ -162,7 +172,7 @@ nonisolated struct ClaudeHookInstaller: Sendable {
             }
             let backup = try backUp(original, target: target, now: now)
             guard try readSettings(at: url) == original else { continue }
-            try atomicWrite(cleaned.serializedData(pretty: true), to: url)
+            try atomicWrite(HookSettingsMerger.serialize(cleaned), to: url)
             removeManifest(at: target.manifestPath)
             return ClaudeHookInstallOutcome(status: .notInstalled, message: "Hooks removed.", backupPath: backup)
         }
@@ -227,15 +237,12 @@ nonisolated struct ClaudeHookInstaller: Sendable {
         }
     }
 
-    /// Strict parse. An empty (or whitespace-only) file counts as "no settings yet".
+    /// Strict parse (Core). Empty or whitespace-only ⇒ nil ("no settings yet"); invalid ⇒ throws, never written.
     private func parse(_ data: Data?) throws -> JSONValue? {
-        guard let data else { return nil }
-        let isBlank = data.allSatisfy { $0 == 0x20 || $0 == 0x0A || $0 == 0x0D || $0 == 0x09 }
-        if isBlank { return nil }
         do {
-            return try JSONValue.parse(data)
+            return try HookSettingsMerger.parseSettings(data)
         } catch {
-            throw ClaudeInstallerError("settings.json is not valid JSON (\(error)). Fix it first; nothing was changed.")
+            throw ClaudeInstallerError("\(error)")
         }
     }
 
@@ -248,13 +255,11 @@ nonisolated struct ClaudeHookInstaller: Sendable {
         } catch {
             throw ClaudeInstallerError("Could not create the backup folder: \(error.localizedDescription)")
         }
-        let stamp = ISO8601DateFormatter().string(from: now).replacingOccurrences(of: ":", with: "-")
-        let prefix =
-            target.isPrimary ? "settings.json." : "settings.json.dir-\(Self.fileTag(for: target.configDirectory))."
-        var path = directory + "/" + prefix + stamp + ".bak"
+        let base = HookSettingsMerger.backupPath(directory: directory, settingsFile: target.settingsFile, date: now)
+        var path = base
         var counter = 2
         while fileManager.fileExists(atPath: path) {
-            path = directory + "/" + prefix + stamp + "-\(counter).bak"
+            path = String(base.dropLast(".bak".count)) + "-\(counter).bak"
             counter += 1
         }
         do {
@@ -262,18 +267,19 @@ nonisolated struct ClaudeHookInstaller: Sendable {
         } catch {
             throw ClaudeInstallerError("Could not write the backup: \(error.localizedDescription)")
         }
-        pruneBackups(in: directory, prefix: prefix)
+        pruneBackups(in: directory, target: target, now: now)
         return path
     }
 
-    private func pruneBackups(in directory: String, prefix: String) {
+    /// Keeps the newest `maxBackups` backups of this settings file (ISO timestamps sort chronologically).
+    private func pruneBackups(in directory: String, target: ClaudeHookInstallTarget, now: Date) {
+        let sample = HookSettingsMerger.backupFileName(settingsFile: target.settingsFile, date: now)
+        guard let range = sample.range(of: "settings.json.") else { return }
+        let prefix = String(sample[..<range.upperBound])
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory) else { return }
-        let ours = names.filter { $0.hasPrefix(prefix) && $0.hasSuffix(".bak") }.sorted()
-        // ISO timestamps sort chronologically; the primary prefix must not match secondary ("dir-…") backups.
-        let candidates = ours.filter { name in
-            let rest = name.dropFirst(prefix.count)
-            return rest.first?.isNumber ?? false
-        }
+        let candidates = names.filter { name in
+            name.hasPrefix(prefix) && name.hasSuffix(".bak") && (name.dropFirst(prefix.count).first?.isNumber ?? false)
+        }.sorted()
         guard candidates.count > maxBackups else { return }
         for name in candidates.prefix(candidates.count - maxBackups) {
             try? FileManager.default.removeItem(atPath: directory + "/" + name)

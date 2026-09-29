@@ -92,15 +92,19 @@ public struct HookInstallSpec: Sendable, Hashable {
         self.marker = marker
     }
 
-    /// Standard spec. `claudeVersion == nil` (unknown) ⇒ base events only.
+    /// Standard spec. `claudeVersion == nil` (unknown) ⇒ base events only. A known version also drops base
+    /// events it predates (before 2.1.101 one unknown event name made Claude Code ignore the whole file).
     public static func make(hookBinaryPath: String, claudeVersion: ClaudeVersion?, wrapStatusLine: Bool)
         -> HookInstallSpec
     {
         var events = HookEventName.baseEvents
-        if let version = claudeVersion, let gate = ClaudeVersion(HookEventName.extendedEventsMinimumVersion),
-            version >= gate
-        {
-            events += HookEventName.extendedEvents
+        if let version = claudeVersion {
+            events = events.filter { event in
+                event.minimumVersion.flatMap { ClaudeVersion($0) }.map { version >= $0 } ?? true
+            }
+            if let gate = ClaudeVersion(HookEventName.extendedEventsMinimumVersion), version >= gate {
+                events += HookEventName.extendedEvents
+            }
         }
         let binary = ShellQuote.quote(hookBinaryPath)
         return HookInstallSpec(

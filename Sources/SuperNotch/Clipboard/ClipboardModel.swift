@@ -350,7 +350,11 @@ final class ClipboardModel {
     // MARK: Private: capture
 
     private func pasteboardChanged() {
-        guard isEnabled, hasLoaded, pasteboardAccess.allowsAutomaticCapture else { return }
+        guard isEnabled, hasLoaded else { return }
+        // The user may have answered the macOS paste-privacy prompt since the last change.
+        let access = ClipboardPasteService.pasteboardAccess
+        if access != pasteboardAccess { pasteboardAccess = access }
+        guard access.allowsAutomaticCapture else { return }
         let pasteboard = NSPasteboard.general
         let types = (pasteboard.types ?? []).map(\.rawValue)
         let frontmost = NSWorkspace.shared.frontmostApplication

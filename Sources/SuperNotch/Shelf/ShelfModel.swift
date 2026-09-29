@@ -247,7 +247,19 @@ final class ShelfModel {
         }
     }
 
-    /// Double-click: files open in their default app, links in the browser, text is copied.
+    /// Double-click: Quick Look for files (the selection when the item is part of it), links open in the
+    /// browser, text is copied.
+    func primaryAction(id: UUID) {
+        guard let item = item(id: id) else { return }
+        switch item.kind {
+        case .file, .folder, .image:
+            quickLook(ids: targetIDs(for: id))
+        case .link, .text:
+            open(id: id)
+        }
+    }
+
+    /// "Open" / Return: files open in their default app, links in the browser, text is copied.
     func open(id: UUID) {
         guard let item = item(id: id) else { return }
         switch item.kind {
