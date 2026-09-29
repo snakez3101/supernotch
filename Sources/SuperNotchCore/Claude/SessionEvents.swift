@@ -1,6 +1,6 @@
 import Foundation
 
-// CONTRACT FILE (SPEC §D.2/§E). Owner: claude-core.
+// CONTRACT FILE (SPEC §D.1/§E). Owner: claude-core.
 
 /// Signals extracted from the tail of a transcript JSONL (undocumented format, parsed tolerantly).
 public struct TranscriptSignals: Sendable, Hashable {
@@ -12,12 +12,29 @@ public struct TranscriptSignals: Sendable, Hashable {
     public var summary: String?
     /// The newest user/assistant entry is a "[Request interrupted by user" marker (Esc does not fire Stop).
     public var interrupted: Bool
+    /// `timestamp` of that interrupt entry when the transcript carries one. The store ignores an interrupt
+    /// older than the current turn (a transcript read racing a fresh prompt must not flip it to done).
+    public var interruptedAt: Date?
 
-    public init(customTitle: String? = nil, aiTitle: String? = nil, summary: String? = nil, interrupted: Bool = false) {
+    public init(
+        customTitle: String? = nil, aiTitle: String? = nil, summary: String? = nil, interrupted: Bool = false,
+        interruptedAt: Date? = nil
+    ) {
         self.customTitle = customTitle
         self.aiTitle = aiTitle
         self.summary = summary
         self.interrupted = interrupted
+        self.interruptedAt = interruptedAt
+    }
+
+    /// Titles found in `other` fill the gaps of `self` (use to combine a head read with a tail read; the tail
+    /// wins because it is newer). The interrupt flag always comes from `self` (the tail).
+    public func fillingTitles(from other: TranscriptSignals) -> TranscriptSignals {
+        var merged = self
+        merged.customTitle = customTitle ?? other.customTitle
+        merged.aiTitle = aiTitle ?? other.aiTitle
+        merged.summary = summary ?? other.summary
+        return merged
     }
 }
 
@@ -40,6 +57,11 @@ public enum SessionEvent: Sendable, Hashable {
     case titleGenerated(sessionID: String, title: String)
     /// Periodic watchdog (every ~30 s while sessions exist).
     case tick
+
+    /// A `SessionEnd` the app fabricates, e.g. when Claude Desktop quits and its pid-less sessions die with it.
+    public static func sessionEnded(sessionID: String, now: Date) -> SessionEvent {
+        .hook(.synthetic(.sessionEnd, sessionID: sessionID, now: now, fields: [("reason", "other")]))
+    }
 }
 
 /// Side effects the store asks its owner (ClaudeSessionsModel) to perform or react to.
@@ -60,7 +82,7 @@ public enum SessionEffect: Sendable, Hashable {
     case usageUpdated
 }
 
-/// Seam for session providers (SPEC §D.3). v1 has one: the local hook/agents source (claude-app).
+/// Seam for session providers (SPEC §D.1). v1 has one: the local hook/agents source (claude-app).
 /// A future cloud source (claude.ai/code) implements the same protocol and emits `SessionEvent`s.
 @MainActor
 public protocol SessionSource: AnyObject {

@@ -408,14 +408,14 @@ public struct HoverIntent: Sendable { /* pure dwell state machine; see file */ }
 
 ### D.3 Core: media, shelf, clipboard, settings (FOUNDATION contract types)
 
-* `PlaybackSnapshot`: track (`TrackInfo?`), state (`PlaybackState`), position, positionTimestamp,
-  shuffling, repeating, volume.
+* `PlaybackSnapshot`: track (`TrackInfo?`), state (`PlaybackState`), positionSeconds, positionTimestamp,
+  shuffling, repeating, volume (0…100).
   * `position(at:)` extrapolates while playing. `progress(at:)` is 0…1.
 * `TrackInfo`: id, title, artist, album, durationSeconds, artworkURL.
   * `isAd`, `isLocal`, `isEpisode` are derived from the Spotify id/URI.
 * `ShelfItem`: id, kind (`file | folder | text | link | image`), displayName, storedRelativePath (relative
   to `SuperNotchPaths.shelfDirectory`), text, urlString, byteSize, addedAt, pinned, originalPath.
-* `ClipboardEntry`: id, content (`.text | .link | .image(relativePath, width, height) | .files([path])`),
+* `ClipboardEntry`: id, content (`.text | .link | .image(relativePath:pixelWidth:pixelHeight:) | .files([path])`),
   sourceAppBundleID, sourceAppName, capturedAt, pinned, contentHash, `previewText`.
 * `RetentionPeriod`: `off | oneDay | sevenDays | thirtyDays` (default `.sevenDays`), `interval`.
 * `AppSettings`: every persisted setting with its default (see the file). It is stored as JSON in
@@ -655,8 +655,11 @@ are real code; read them for details.
     let media: MediaModel
     let shelf: ShelfModel
     let clipboard: ClipboardModel
-    init(settings: SettingsStore = SettingsStore())    // builds settings → notch → claude → media → shelf → clipboard
-    func start(); func stop()                          // same order / reverse order
+    let version: String, build: String                 // Info.plist ("dev"/"0" when unbundled), e.g. for About
+    private(set) var isRunning: Bool
+    init(settings: SettingsStore = SettingsStore(),    // builds settings → notch → claude → media → shelf → clipboard
+         paths: SuperNotchPaths = SuperNotchPaths(homeDirectory: NSHomeDirectory()))
+    func start(); func stop()                          // same order / reverse order; idempotent
     func inject<V: View>(_ view: V) -> some View       // .environment(AppModel) + all six models
     func showSettings()                                // opens/focuses the Settings window
     func showOnboarding()                              // "Run setup again" (Settings › General)
@@ -676,6 +679,11 @@ enum NotchSlots { … }                                  // §D.5 (+ closedWidth
 enum DesignTokens { … }                                // Shared/DesignTokens.swift: colours, fonts, spacing, glass gradient
 struct HomeTabView: View { init() }
 ```
+
+Core additions (FOUNDATION files, tested): `NotchMetrics.contentFadeInDelay`, `NotchMetrics.closedWidthExtra(…)`,
+`NotchMetrics.glassGradientStops(…)`, `NotchStyle.usesGlass(reduceTransparency:)`,
+`AppSettings.clipboardLimitRange` (50…1000, §A.10; `normalize()` clamps to it) and
+`AppSettings.resetToDefaults()`.
 
 Every hierarchy built with `AppModel.inject(_:)` also carries `AppModel` itself, so a view may use
 `@Environment(AppModel.self)` (e.g. for `showOnboarding()`).

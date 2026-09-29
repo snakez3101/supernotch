@@ -15,8 +15,10 @@ import SuperNotchCore
 
 /// A DispatchSource vnode watcher for one path. The handler runs on a private utility queue.
 nonisolated final class ClaudeVnodeWatcher: @unchecked Sendable {
-    private let source: DispatchSourceFileSystemObject
     let path: String
+    #if canImport(Darwin)
+        private let source: DispatchSourceFileSystemObject
+    #endif
 
     private static let queue = DispatchQueue(label: "io.github.snakez3101.supernotch.claude.vnode", qos: .utility)
 
@@ -26,30 +28,29 @@ nonisolated final class ClaudeVnodeWatcher: @unchecked Sendable {
     ) {
         #if canImport(Darwin)
             let fd = open(path, O_EVTONLY)
+            guard fd >= 0 else { return nil }
+            self.path = path
+            let source = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: fd, eventMask: events, queue: Self.queue)
+            source.setEventHandler { [weak source] in
+                guard let source else { return }
+                handler(source.data)
+            }
+            source.setCancelHandler { _ = Darwin.close(fd) }
+            self.source = source
+            source.resume()
         #else
-            let fd = open(path, O_RDONLY)
+            return nil  // vnode sources are Darwin-only; the app target is macOS-only anyway.
         #endif
-        guard fd >= 0 else { return nil }
-        self.path = path
-        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: events, queue: Self.queue)
-        source.setEventHandler { [weak source] in
-            guard let source else { return }
-            handler(source.data)
-        }
-        source.setCancelHandler {
-            #if canImport(Darwin)
-                _ = Darwin.close(fd)
-            #else
-                _ = Glibc.close(fd)
-            #endif
-        }
-        self.source = source
-        source.resume()
     }
 
-    func cancel() { source.cancel() }
+    func cancel() {
+        #if canImport(Darwin)
+            source.cancel()
+        #endif
+    }
 
-    deinit { source.cancel() }
+    deinit { cancel() }
 }
 
 /// Watches `<config>/sessions/` and reports PIDs whose file vanished and whose process is gone.
@@ -71,7 +72,7 @@ final class ClaudeSessionFileWatcher {
         guard FileManager.default.fileExists(atPath: directory) else { return }
         knownPIDs = Self.listPIDs(in: directory)
         watcher = ClaudeVnodeWatcher(path: directory, events: [.write, .delete, .rename]) { [weak self] events in
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 if events.contains(.delete) || events.contains(.rename) {
                     self.watcher = nil  // The directory itself went away; re-armed on the next start().
@@ -137,7 +138,7 @@ final class ClaudeTranscriptWatcher {
         for (sessionID, path) in targets where watchers[sessionID] == nil {
             let watcher = ClaudeVnodeWatcher(path: path, events: [.write, .extend, .delete, .rename]) {
                 [weak self] events in
-                DispatchQueue.main.async {
+                DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     if events.contains(.delete) || events.contains(.rename) {
                         self.watchers[sessionID]?.cancel()

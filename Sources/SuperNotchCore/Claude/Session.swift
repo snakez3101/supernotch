@@ -99,24 +99,61 @@ public struct SessionHost: Sendable, Hashable, Codable {
     }
 
     public static let claudeDesktopBundleID = "com.anthropic.claudefordesktop"
+    public static let vscodeBundleID = "com.microsoft.VSCode"
+
+    /// Bundle ids of VS Code and its forks (their integrated terminals set TERM_PROGRAM=vscode).
+    public static let vscodeFamilyBundleIDs: Set<String> = [
+        "com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.visualstudio.code.oss", "com.vscodium",
+        "com.todesktop.230313mzl4w4u92", "com.exafunction.windsurf", "com.trae.app",
+    ]
+
+    /// Maps `TERM_PROGRAM` to the terminal's bundle id. `TERM_PROGRAM` is the authoritative host hint; the
+    /// inherited `__CFBundleIdentifier` can leak between GUI apps (e.g. a tmux server started elsewhere).
+    /// Returns nil for ambiguous values ("vscode" covers several editors, "tmux" hides the outer terminal).
+    public static func bundleID(forTermProgram termProgram: String?) -> String? {
+        switch termProgram?.lowercased() {
+        case "iterm.app": return "com.googlecode.iterm2"
+        case "apple_terminal": return "com.apple.Terminal"
+        case "ghostty": return "com.mitchellh.ghostty"
+        case "wezterm": return "com.github.wez.wezterm"
+        case "warpterminal": return "dev.warp.Warp-Stable"
+        case "hyper": return "co.zeit.hyper"
+        case "tabby": return "org.tabby"
+        case "kitty": return "net.kovidgoyal.kitty"
+        case "rio": return "com.raphaelamorim.rio"
+        default: return nil
+        }
+    }
 
     /// Derives host info from a hook context (pure; tested).
     public init(context: HookContext) {
+        let termBundle = Self.bundleID(forTermProgram: context.termProgram)
         let kind: SessionHostKind
-        if context.entrypoint == "claude-desktop" || context.bundleIdentifier == Self.claudeDesktopBundleID
-            || context.hostSessionID?.hasPrefix("local_") == true
-        {
+        let bundleID: String?
+        if context.isDesktopHost {
             kind = .claudeDesktop
-        } else if context.vscodeInjection || context.entrypoint == "claude-vscode" {
+            bundleID = Self.claudeDesktopBundleID
+        } else if context.entrypoint?.lowercased() == HookContext.vscodeEntrypoint || context.vscodeInjection
+            || context.termProgram?.lowercased() == "vscode"
+            || context.bundleIdentifier.map(Self.vscodeFamilyBundleIDs.contains) == true
+        {
             kind = .vscode
-        } else if context.tty != nil || context.termProgram != nil {
+            bundleID = context.bundleIdentifier ?? Self.vscodeBundleID
+        } else if context.tty != nil || context.termProgram != nil || context.tmux != nil
+            || context.iTermSessionID != nil || context.termSessionID != nil || context.kittyWindowID != nil
+            || context.weztermPane != nil
+        {
             kind = .terminal
+            bundleID =
+                termBundle ?? context.bundleIdentifier
+                ?? (context.ghosttyResourcesDir != nil ? "com.mitchellh.ghostty" : nil)
         } else {
             kind = .unknown
+            bundleID = termBundle ?? context.bundleIdentifier
         }
         self.init(
             kind: kind,
-            appBundleID: kind == .claudeDesktop ? Self.claudeDesktopBundleID : context.bundleIdentifier,
+            appBundleID: bundleID,
             termProgram: context.termProgram,
             tty: context.tty,
             iTermSessionID: context.iTermSessionID,
@@ -269,10 +306,10 @@ public struct Session: Sendable, Hashable, Identifiable {
     public var isVisible: Bool { visibility == .visible }
     public var hasError: Bool { lastError != nil }
 
-    /// Last path component of `cwd` ("supernotch").
+    /// Last path component of `cwd` ("supernotch"); "Claude" when the cwd is unknown or the root.
     public var projectName: String {
-        let trimmed = cwd.hasSuffix("/") ? String(cwd.dropLast()) : cwd
-        return trimmed.split(separator: "/").last.map(String.init) ?? trimmed
+        let name = cwd.split(separator: "/").last.map(String.init) ?? ""
+        return name.isEmpty ? "Claude" : name
     }
 
     /// What the row shows.

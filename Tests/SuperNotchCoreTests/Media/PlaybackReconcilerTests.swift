@@ -138,3 +138,42 @@ struct PlaybackReconcilerTests {
         #expect(interval(visible: false) == nil)
     }
 }
+
+@Suite("Spotify state flow")
+struct SpotifyStateFlowTests {
+    let t0 = Date(timeIntervalSince1970: 50_000)
+
+    /// notification -> script -> poll -> user pause -> script, exactly the way MediaModel chains the Core pieces.
+    @Test func notificationScriptPollAndOptimisticPause() throws {
+        // 1. Instant snapshot from the notification (no artwork URL in it).
+        let info = try #require(
+            SpotifyNotificationInfo(
+                userInfo: [
+                    "Player State": "Playing", "Track ID": "spotify:track:A", "Name": "A", "Artist": "Art",
+                    "Album": "Alb", "Duration": 200_000, "Playback Position": 12.5,
+                ]))
+        let instant = try #require(SpotifySnapshotMerger.merge(previous: nil, info: info, now: t0))
+        #expect(instant.track?.artworkURL == nil)
+
+        // 2. The script answers 60 ms later, now with the cover URL: it must replace the instant snapshot.
+        let scripted = ["playing", "12,56", "false", "false", "50", "spotify:track:A", "A", "Art", "Alb", "200000",
+            "https://i.scdn.co/image/a"].joined(separator: "\u{1F}")
+        let first = try #require(SpotifyScriptParser.parse(scripted, now: t0 + 0.06))
+        let afterScript = PlaybackReconciler.reconcile(previous: instant, incoming: first)
+        #expect(afterScript.track?.artworkURL == "https://i.scdn.co/image/a")
+
+        // 3. A poll 3 s later agrees with the extrapolation: nothing to publish.
+        let poll = try #require(
+            SpotifyScriptParser.parse(scripted.replacingOccurrences(of: "12,56", with: "15,6"), now: t0 + 3.06))
+        #expect(PlaybackReconciler.reconcile(previous: afterScript, incoming: poll) == afterScript)
+
+        // 4. The user pauses at t0 + 5: optimistic state, then the script confirms; still nothing new to publish.
+        let optimistic = afterScript.togglingPlayback(at: t0 + 5)
+        #expect(optimistic.state == .paused)
+        let confirmed = try #require(
+            SpotifyScriptParser.parse(
+                scripted.replacingOccurrences(of: "playing", with: "paused").replacingOccurrences(
+                    of: "12,56", with: "17,55"), now: t0 + 5.2))
+        #expect(PlaybackReconciler.reconcile(previous: optimistic, incoming: confirmed) == optimistic)
+    }
+}

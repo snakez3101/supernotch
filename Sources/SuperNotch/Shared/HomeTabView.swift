@@ -59,6 +59,11 @@ private struct HomeTabDisabledHint: View {
     let symbol: String
     let message: String
 
+    init(symbol: String, message: String) {
+        self.symbol = symbol
+        self.message = message
+    }
+
     var body: some View {
         VStack(spacing: DesignTokens.Spacing.s) {
             Image(systemName: symbol)

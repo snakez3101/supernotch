@@ -35,6 +35,20 @@ public struct ClaudePaths: Sendable, Hashable {
     public var sessionsDirectory: String { configDirectory + "/sessions" }
     /// Transcripts: projects/<encoded-cwd>/<session-id>.jsonl (always prefer `transcript_path` from hooks).
     public var projectsDirectory: String { configDirectory + "/projects" }
+
+    /// `<project>` folder name for a working directory: every non-alphanumeric character becomes "-"
+    /// (sessions.md "Where transcripts are stored"). Nil when the name would exceed 200 characters, because
+    /// Claude Code then appends a hash we cannot reproduce.
+    public static func projectDirectoryName(forCwd cwd: String) -> String? {
+        let name = String(cwd.map { $0.isASCII && ($0.isLetter || $0.isNumber) ? $0 : "-" })
+        return name.isEmpty || name.count > 200 ? nil : name
+    }
+
+    /// Best-effort transcript location for a session known only from `claude agents --json` (no hook yet).
+    public func transcriptFile(cwd: String, sessionID: String) -> String? {
+        guard let folder = Self.projectDirectoryName(forCwd: cwd) else { return nil }
+        return projectsDirectory + "/" + folder + "/" + sessionID + ".jsonl"
+    }
 }
 
 /// Minimal dotted-version comparison for `claude --version` output such as "2.1.268 (Claude Code)".

@@ -109,10 +109,8 @@ final class SpotifyController {
         }
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
-        Task {
-            do {
-                _ = try await workspace.openApplication(at: applicationURL, configuration: configuration)
-            } catch {
+        workspace.openApplication(at: applicationURL, configuration: configuration) { _, error in
+            if let error {
                 Log.media.error("Opening Spotify failed: \(error.localizedDescription, privacy: .public)")
             }
         }

@@ -76,7 +76,7 @@ nonisolated final class SpotifyEventObserver: NSObject, @unchecked Sendable {
     }
 
     private static func isSpotify(_ notification: Notification) -> Bool {
-        guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else {
+        guard let app = notification.userInfo?["NSWorkspaceApplicationKey"] as? NSRunningApplication else {
             return false
         }
         return app.bundleIdentifier == SpotifyApp.bundleID
