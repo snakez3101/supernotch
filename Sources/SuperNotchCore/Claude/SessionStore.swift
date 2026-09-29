@@ -119,6 +119,35 @@ public struct SessionStore: Sendable {
     /// True while a Desktop session is kept after its process ended (see header).
     public func isParked(_ sessionID: String) -> Bool { meta[sessionID]?.parkedAt != nil }
 
+    // MARK: - Restoring persisted state (app launch)
+
+    /// Seeds usage persisted by the app (`sn.claude.usage`). Windows that already reset are dropped; live data the
+    /// store already has wins within the same window (`UsageLimits.merged`). No effects.
+    public mutating func restoreUsage(_ restored: UsageLimits?, now: Date = Date()) {
+        guard let restored else { return }
+        let merged = (usage.map { restored.merged(with: $0) } ?? restored).pruned(now: now)
+        usage = merged.isEmpty ? nil : merged
+    }
+
+    /// Re-inserts sessions the app persisted before a restart or update (only ids the store does not know and
+    /// did not just remove). Pending cards are dropped (their hook connections died with the old process);
+    /// liveness and `claude agents --json` correct anything stale. Returns `sessionAppeared` effects.
+    public mutating func restoreSessions(_ restored: [Session], now: Date) -> [SessionEffect] {
+        var effects: [SessionEffect] = []
+        for var session in restored.sorted(by: { $0.id < $1.id })
+        where sessions[session.id] == nil && tombstones[session.id] == nil {
+            session.pendingPermissionIDs = []
+            session.isStale = false
+            session.updatedAt = now
+            sessions[session.id] = session
+            var meta = SessionMeta()
+            meta.titleRequested = session.titleCandidates.generated != nil
+            self.meta[session.id] = meta
+            if session.isVisible { effects.append(.sessionAppeared(sessionID: session.id)) }
+        }
+        return effects
+    }
+
     // MARK: - Reducer
 
     public mutating func apply(_ event: SessionEvent, now: Date) -> [SessionEffect] {

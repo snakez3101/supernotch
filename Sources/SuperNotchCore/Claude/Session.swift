@@ -227,8 +227,44 @@ public enum SessionVisibility: String, Sendable, Hashable, Codable {
     case hiddenUntilFirstPrompt
 }
 
-/// One Claude Code session as displayed by SuperNotch.
-public struct Session: Sendable, Hashable, Identifiable {
+extension SessionPhase: Codable {
+    /// "idle" | "working" | "done" | "needsInput.permission" | "needsInput.question" | "needsInput.other".
+    public var storageValue: String {
+        switch self {
+        case .idle: return "idle"
+        case .working: return "working"
+        case .done: return "done"
+        case .needsInput(let kind): return "needsInput." + kind.rawValue
+        }
+    }
+
+    public init?(storageValue: String) {
+        switch storageValue {
+        case "idle": self = .idle
+        case "working": self = .working
+        case "done": self = .done
+        default:
+            guard storageValue.hasPrefix("needsInput."),
+                let kind = NeedsInputKind(rawValue: String(storageValue.dropFirst("needsInput.".count)))
+            else { return nil }
+            self = .needsInput(kind)
+        }
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let text = try decoder.singleValueContainer().decode(String.self)
+        self = SessionPhase(storageValue: text) ?? .idle
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(storageValue)
+    }
+}
+
+/// One Claude Code session as displayed by SuperNotch. `Codable` so the app may persist rows across restarts
+/// (`SessionStore.restoreSessions`).
+public struct Session: Sendable, Hashable, Identifiable, Codable {
     /// Claude Code `session_id` (UUID string).
     public let id: String
     public var cwd: String
@@ -305,6 +341,43 @@ public struct Session: Sendable, Hashable, Identifiable {
         self.updatedAt = updatedAt ?? startedAt
         self.phaseChangedAt = phaseChangedAt ?? startedAt
         self.hasBackgroundWork = hasBackgroundWork
+    }
+
+    // Tolerant decoding: rows persisted by another app version must never fail to load.
+    private enum CodingKeys: String, CodingKey {
+        case id, cwd, transcriptPath, pid, pidStartTime, claudeExecutablePath, host, phase, lastError, title
+        case titleCandidates, firstPrompt, lastAssistantPreview, activeSubagents, pendingPermissionIDs, visibility
+        case isStale, startedAt, updatedAt, phaseChangedAt, hasBackgroundWork
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func optional<T: Decodable>(_ type: T.Type, _ key: CodingKeys) -> T? {
+            (try? c.decodeIfPresent(type, forKey: key)) ?? nil
+        }
+        let startedAt = try c.decode(Date.self, forKey: .startedAt)
+        self.init(
+            id: try c.decode(String.self, forKey: .id),
+            cwd: optional(String.self, .cwd) ?? "",
+            transcriptPath: optional(String.self, .transcriptPath),
+            pid: optional(Int32.self, .pid),
+            pidStartTime: optional(Double.self, .pidStartTime),
+            claudeExecutablePath: optional(String.self, .claudeExecutablePath),
+            host: optional(SessionHost.self, .host) ?? SessionHost(),
+            phase: optional(SessionPhase.self, .phase) ?? .idle,
+            lastError: optional(String.self, .lastError),
+            title: optional(SessionTitle.self, .title),
+            titleCandidates: optional(TitleCandidates.self, .titleCandidates) ?? TitleCandidates(),
+            firstPrompt: optional(String.self, .firstPrompt),
+            lastAssistantPreview: optional(String.self, .lastAssistantPreview),
+            activeSubagents: optional(Int.self, .activeSubagents) ?? 0,
+            pendingPermissionIDs: optional([String].self, .pendingPermissionIDs) ?? [],
+            visibility: optional(SessionVisibility.self, .visibility) ?? .visible,
+            isStale: optional(Bool.self, .isStale) ?? false,
+            startedAt: startedAt,
+            updatedAt: optional(Date.self, .updatedAt),
+            phaseChangedAt: optional(Date.self, .phaseChangedAt),
+            hasBackgroundWork: optional(Bool.self, .hasBackgroundWork) ?? false)
     }
 
     public var trafficLight: TrafficLight { phase.trafficLight }
