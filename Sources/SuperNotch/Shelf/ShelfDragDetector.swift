@@ -1,5 +1,7 @@
 // Owner: shelf-clipboard (SPEC §A.5, spec-critique K4/E6). Detects a FILE drag approaching the notch while
-// another app is the drag source, so the shelf can open its drop zones before the cursor arrives.
+// another app is the drag source, so the shelf can open its drop zones before the cursor arrives. Text, links and
+// image data count only when dragged onto the notch itself or over the Shelf tab that is already open
+// (`ShelfDragGeometry.isNearForContent`), so browser-tab and text drags passing by never open it.
 //
 // Energy (SPEC §F.1, critique E6):
 // * Only two global monitors: `.leftMouseDragged` and `.leftMouseUp`. Nothing runs while the mouse is idle.
@@ -8,8 +10,8 @@
 //   `probeInterval` and at most `maxProbesPerGesture` times per gesture.
 // * A drag counts only if the drag pasteboard changed since the previous drag gesture ended (so window drags
 //   and text selections never count, and the stale contents of an earlier drag are never mistaken for a new
-//   one) and its types are file URLs or file promises (`ShelfDragTypes`). The baseline change count is read
-//   once at the end of every gesture that actually dragged (never on plain clicks).
+//   one) and its types are file URLs or file promises, or droppable content (`ShelfDragTypes`). The baseline
+//   change count is read once at the end of every gesture that actually dragged (never on plain clicks).
 // * The watchdog timer exists only while drop mode is on.
 // Global mouse monitors need no Accessibility permission (they cannot see key events).
 import AppKit
@@ -20,12 +22,16 @@ final class ShelfDragDetector {
     var onNearChange: ((Bool) -> Void)?
     /// Physical notch rect and the expanded shape rect (screen coordinates); nil ⇒ no notch display.
     var geometryProvider: (() -> (notch: CGRect, open: CGRect?)?)?
+    /// Whether the Shelf tab is already expanded on screen (then text/link drags over it count too).
+    var isShelfOpenProvider: (() -> Bool)?
 
     private enum Gesture {
         case idle
         /// Pointer is near the notch but the drag pasteboard has not (yet) shown a new file drag.
         case probing(count: Int, lastProbe: TimeInterval)
         case fileDrag
+        /// Text, a link or image data (no files): see `ShelfDragGeometry.isNearForContent`.
+        case contentDrag
         case ignored
     }
 
@@ -35,6 +41,8 @@ final class ShelfDragDetector {
     private static let maxProbesPerGesture = 6
     /// Debounce: the pointer must stay near this long before drop mode turns on …
     private static let enterDelay: TimeInterval = 0.06
+    /// Longer dwell for text/link drags: a tab dragged across the menu bar must not flash the shelf open.
+    private static let contentEnterDelay: TimeInterval = 0.25
     /// … and away this long before it turns off.
     private static let exitDelay: TimeInterval = 0.15
 
@@ -94,7 +102,7 @@ final class ShelfDragDetector {
         switch gesture {
         case .ignored:
             return
-        case .fileDrag:
+        case .fileDrag, .contentDrag:
             updateNearState()
         case .idle, .probing:
             probeIfClose()
@@ -104,7 +112,8 @@ final class ShelfDragDetector {
     private func probeIfClose() {
         guard let geometry = geometryProvider?() else { return }
         let point = NSEvent.mouseLocation
-        let probeRect = geometry.notch.insetBy(dx: -Self.probeMargin, dy: -Self.probeMargin)
+        var probeRect = geometry.notch.insetBy(dx: -Self.probeMargin, dy: -Self.probeMargin)
+        if let open = geometry.open { probeRect = probeRect.union(open) }
         guard probeRect.contains(point) else { return }
 
         let now = ProcessInfo.processInfo.systemUptime
@@ -128,6 +137,9 @@ final class ShelfDragDetector {
             gesture = .fileDrag
             Log.shelf.debug("File drag detected near the notch")
             updateNearState()
+        } else if ShelfDragTypes.isContentDrag(types: types) {
+            gesture = .contentDrag
+            updateNearState()
         } else {
             gesture = .ignored
         }
@@ -139,14 +151,25 @@ final class ShelfDragDetector {
             return
         }
         let now = ProcessInfo.processInfo.systemUptime
-        let near = ShelfDragGeometry.isNear(
-            point: NSEvent.mouseLocation, notchRect: geometry.notch, openRect: geometry.open, isActive: isNear)
+        let point = NSEvent.mouseLocation
+        let near: Bool
+        let enterDelay: TimeInterval
+        if case .contentDrag = gesture {
+            near = ShelfDragGeometry.isNearForContent(
+                point: point, notchRect: geometry.notch, openRect: geometry.open, isActive: isNear,
+                isShelfOpen: isShelfOpenProvider?() ?? false)
+            enterDelay = Self.contentEnterDelay
+        } else {
+            near = ShelfDragGeometry.isNear(
+                point: point, notchRect: geometry.notch, openRect: geometry.open, isActive: isNear)
+            enterDelay = Self.enterDelay
+        }
         if near {
             farCandidateSince = nil
             guard !isNear else { return }
             let since = nearCandidateSince ?? now
             nearCandidateSince = since
-            if now - since >= Self.enterDelay { setNear(true) }
+            if now - since >= enterDelay { setNear(true) }
         } else {
             nearCandidateSince = nil
             guard isNear else { return }
@@ -196,9 +219,14 @@ final class ShelfDragDetector {
     private func watchdogFired() {
         if NSEvent.pressedMouseButtons & 1 == 0 {
             gestureEnded()
-        } else if case .fileDrag = gesture {
-            // The pointer may be parked without dragged events; re-check (also applies the exit debounce).
-            updateNearState()
+        } else {
+            switch gesture {
+            case .fileDrag, .contentDrag:
+                // The pointer may be parked without dragged events; re-check (also applies the exit debounce).
+                updateNearState()
+            case .idle, .probing, .ignored:
+                break
+            }
         }
     }
 }
