@@ -1,7 +1,7 @@
 // Owner: claude-app. "Jump to chat" (SPEC §D.8), best effort, never blocks the main thread.
 //
 // | Host            | Technique                                                                          |
-// | Claude Desktop  | claude://code/continue?session=<local_id> (undocumented) → else activate the app  |
+// | Claude Desktop  | claude://claude.ai/epitaxy/<local_id> (undocumented) → else activate the app      |
 // | iTerm2          | AppleScript: select the session by ITERM_SESSION_ID's UUID, else by tty            |
 // | Terminal.app    | AppleScript: select the tab whose tty matches                                      |
 // | tmux            | tmux select-window/select-pane on $TMUX_PANE, then activate the terminal           |
@@ -70,9 +70,12 @@ final class ClaudeSessionFocuser {
 
     // MARK: - Claude Desktop
 
+    /// Desktop's own route to a Code-tab session. Both links are undocumented; `claude://code/continue?session=`
+    /// (SPEC §D.8) is a server-gated entry point that may only open the app, while the app's session route selects
+    /// the tab (observed by other notch apps since Claude Desktop 1.46).
     private func focusDesktop(_ host: SessionHost) {
         if let localID = host.desktopSessionID, Self.isValidDesktopSessionID(localID),
-            let url = URL(string: "claude://code/continue?session=\(localID)"),
+            let url = URL(string: "claude://claude.ai/epitaxy/\(localID)"),
             NSWorkspace.shared.open(url)
         {
             return

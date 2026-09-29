@@ -114,10 +114,11 @@ final class ClaudeSessionFileWatcher {
 
     private static func listPIDs(in directory: String) -> Set<Int32> {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory) else { return [] }
-        return Set(names.compactMap { name in
-            guard name.hasSuffix(".json") else { return nil }
-            return Int32(name.dropLast(5))
-        })
+        return Set(
+            names.compactMap { name in
+                guard name.hasSuffix(".json") else { return nil }
+                return Int32(name.dropLast(5))
+            })
     }
 }
 

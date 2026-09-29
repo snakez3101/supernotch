@@ -195,9 +195,10 @@ private struct ClaudeHookSettingsGroup: View {
                 if !claude.isClaudeCLIFound {
                     Text(
                         "The claude command was not found. Hooks still work; titles, usage checks and newer hook "
-                            + "events need it.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                            + "events need it."
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
                 }
             }
             DisclosureGroup("What gets added to settings.json") {
@@ -281,7 +282,8 @@ private struct ClaudeUsageSettingsGroup: View {
             Text(
                 "The limits come from Claude Code's status line (Pro and Max plans, after the first answer of a "
                     + "terminal session). SuperNotch wraps your status line and keeps showing its output. While any "
-                    + "status line is set, Claude Code hides some footer hints such as \u{201C}esc to interrupt\u{201D}.")
+                    + "status line is set, Claude Code hides some footer hints such as \u{201C}esc to interrupt\u{201D}."
+            )
         }
         .disabled(!store.settings.claudeEnabled)
     }

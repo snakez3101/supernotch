@@ -87,6 +87,7 @@ nonisolated enum ClaudeProcessInspector {
             var buffer = [UInt8](repeating: 0, count: size)
             guard sysctl(&mib, u_int(mib.count), &buffer, &size, nil, 0) == 0, size > 4 else { return nil }
             let argc = Int(buffer.withUnsafeBytes { $0.load(as: Int32.self) })
+            guard argc >= 0 else { return nil }
             var index = 4
             while index < size && buffer[index] != 0 { index += 1 }  // exec path
             while index < size && buffer[index] == 0 { index += 1 }  // padding

@@ -114,11 +114,11 @@ final class ClaudeSessionsModel {
 
     let settings: SettingsStore
     let notch: NotchViewModel
-    @ObservationIgnored private let paths: SuperNotchPaths
-    @ObservationIgnored private let installer: ClaudeHookInstaller
-    @ObservationIgnored private let titleGenerator: ClaudeTitleGenerator
-    @ObservationIgnored private let focuser: ClaudeSessionFocuser
-    @ObservationIgnored private let transcriptWatcher = ClaudeTranscriptWatcher()
+    private let paths: SuperNotchPaths
+    private let installer: ClaudeHookInstaller
+    private let titleGenerator: ClaudeTitleGenerator
+    private let focuser: ClaudeSessionFocuser
+    private let transcriptWatcher = ClaudeTranscriptWatcher()
 
     @ObservationIgnored private var store = SessionStore()
     @ObservationIgnored private var source: ClaudeLocalSessionSource?
@@ -523,7 +523,8 @@ final class ClaudeSessionsModel {
             try? FileManager.default.removeItem(atPath: path)
             return
         }
-        let state = ClaudePersistedSessions(version: ClaudePersistedSessions.currentVersion, savedAt: Date(), sessions: keep)
+        let state = ClaudePersistedSessions(
+            version: ClaudePersistedSessions.currentVersion, savedAt: Date(), sessions: keep)
         do {
             try FileManager.default.createDirectory(atPath: paths.appSupport, withIntermediateDirectories: true)
             try JSONEncoder().encode(state).write(to: URL(fileURLWithPath: path), options: [.atomic])
@@ -828,7 +829,8 @@ nonisolated enum ClaudeHookOperations {
         if !hookSources.isEmpty {
             switch installer.syncHookBinary(sourceCandidates: hookSources) {
             case .failed(let reason):
-                return ClaudeHookOperationOutcome(succeeded: false, message: "Could not copy the hook helper: \(reason)")
+                return ClaudeHookOperationOutcome(
+                    succeeded: false, message: "Could not copy the hook helper: \(reason)")
             case .upToDate, .updated, .missingSource:
                 break
             }

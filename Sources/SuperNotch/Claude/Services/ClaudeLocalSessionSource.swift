@@ -33,7 +33,14 @@ final class ClaudeLocalSessionSource: SessionSource {
     /// Injected by the model (AppKit lives in `ClaudeSystemBridge`).
     var isDesktopAppRunning: () -> Bool = { true }
     /// argv prefix of the user's Claude Code (latest `HookContext.claudeInvocation`), kept up to date by the model.
-    var claudeInvocation: [String]?
+    /// A different install gets a fresh chance at `claude agents --json`.
+    var claudeInvocation: [String]? {
+        didSet {
+            guard claudeInvocation != oldValue else { return }
+            agentsFailures = 0
+            agentsDisabled = false
+        }
+    }
     /// False in the smoke test (SPEC §D.10: never spawn `claude`).
     var allowsAgentsPolling = true
 
@@ -299,48 +306,60 @@ final class ClaudeLocalSessionSource: SessionSource {
         let hint = knownSessions.lazy.compactMap(\.claudeExecutablePath).first(where: ClaudeCLIEnvironment.isUsableHint)
         let knownIDs = Set(knownSessions.map(\.id))
         Task { [weak self] in
-            let entries = await Self.runAgentsList(
+            let result = await Self.runAgentsList(
                 homeDirectory: home, configDirectory: configDirectory, invocation: invocation, hint: hint,
                 knownIDs: knownIDs)
             guard let self else { return }
             self.agentsRunning = false
-            guard let entries else {
+            switch result {
+            case .entries(let entries):
+                self.agentsFailures = 0
+                if !entries.isEmpty { self.sink?(.agentsSnapshot(entries)) }
+            case .cliMissing:
+                break  // Not a failure of `agents`: a hook will report the install later.
+            case .failed:
                 self.agentsFailures += 1
                 if self.agentsFailures >= Self.maxAgentsFailures {
                     self.agentsDisabled = true
                     Log.claude.info("`claude agents --json` unavailable; continuing with hooks only")
                 }
-                return
             }
-            self.agentsFailures = 0
-            guard !entries.isEmpty else { return }
-            self.sink?(.agentsSnapshot(entries))
         }
+    }
+
+    private nonisolated enum AgentsPollResult: Sendable {
+        case entries([AgentsListEntry])
+        case cliMissing
+        case failed
     }
 
     /// Runs `claude agents --json --all` off the main thread. Entries for sessions the store does not know yet
     /// (adoption candidates) are dropped when their process is headless or internal (SPEC §E.2).
     private nonisolated static func runAgentsList(
         homeDirectory: String, configDirectory: String, invocation: [String]?, hint: String?, knownIDs: Set<String>
-    ) async -> [AgentsListEntry]? {
+    ) async -> AgentsPollResult {
         let timeout = agentsTimeout
-        return await ClaudeBackground.run { () -> [AgentsListEntry]? in
+        return await ClaudeBackground.run { () -> AgentsPollResult in
             let environment = ClaudeCLIEnvironment.shared
             guard
                 let command = environment.claudeInvocation(
                     homeDirectory: homeDirectory, reported: invocation, hint: hint),
-                let executable = command.first,
+                let executable = command.first
+            else { return .cliMissing }
+            guard
                 let output = ClaudeProcessRunner.runSync(
                     executable: executable, arguments: Array(command.dropFirst()) + ["agents", "--json", "--all"],
-                    environment: environment.environment(homeDirectory: homeDirectory, configDirectory: configDirectory),
+                    environment: environment.environment(
+                        homeDirectory: homeDirectory, configDirectory: configDirectory),
                     currentDirectory: homeDirectory, timeout: timeout),
                 output.succeeded,
                 let entries = try? AgentsListEntry.decodeList(output.stdout)
-            else { return nil }
-            return entries.filter { entry in
-                guard let id = entry.sessionId, !knownIDs.contains(id), let pid = entry.pid else { return true }
-                return !ClaudeProcessInspector.isHiddenClaudeProcess(pid: pid)
-            }
+            else { return .failed }
+            return .entries(
+                entries.filter { entry in
+                    guard let id = entry.sessionId, !knownIDs.contains(id), let pid = entry.pid else { return true }
+                    return !ClaudeProcessInspector.isHiddenClaudeProcess(pid: pid)
+                })
         }
     }
 }

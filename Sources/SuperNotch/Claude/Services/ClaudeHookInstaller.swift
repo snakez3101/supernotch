@@ -351,9 +351,11 @@ nonisolated struct ClaudeHookInstaller: Sendable {
     /// Filesystem-safe tag for a config folder ("~/.claude-work" → "claude-work-1a2b3c4d").
     static func fileTag(for configDirectory: String) -> String {
         let base = (configDirectory as NSString).lastPathComponent
-        let cleaned = String(base.unicodeScalars.map { scalar -> Character in
-            CharacterSet.alphanumerics.contains(scalar) ? Character(scalar) : "-"
-        }).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        let cleaned = String(
+            base.unicodeScalars.map { scalar -> Character in
+                CharacterSet.alphanumerics.contains(scalar) ? Character(scalar) : "-"
+            }
+        ).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         var hash: UInt32 = 2_166_136_261  // FNV-1a, stable across launches (unlike Hasher).
         for byte in configDirectory.utf8 {
             hash ^= UInt32(byte)

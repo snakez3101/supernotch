@@ -144,7 +144,8 @@ struct PermissionCardView: View {
         HStack(spacing: DesignTokens.Spacing.xs + 1) {
             Image(systemName: ClaudeFormat.symbol(forTool: request.toolName))
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(request.danger.isDangerous ? DesignTokens.Colors.danger : DesignTokens.Colors.secondaryText)
+                .foregroundStyle(
+                    request.danger.isDangerous ? DesignTokens.Colors.danger : DesignTokens.Colors.secondaryText)
             Text(toolLabel(request))
                 .font(DesignTokens.Fonts.caption)
                 .foregroundStyle(DesignTokens.Colors.secondaryText)

@@ -45,12 +45,14 @@ struct UsageBarsView: View {
         let now = Date()
         var lines: [String] = []
         if let window = usage.fiveHour {
-            lines.append("5-hour limit: \(ClaudeFormat.percent(window.usedPercentage)) used. "
-                + ClaudeFormat.resetDescription(window.resetsAt, now: now) + ".")
+            lines.append(
+                "5-hour limit: \(ClaudeFormat.percent(window.usedPercentage)) used. "
+                    + ClaudeFormat.resetDescription(window.resetsAt, now: now) + ".")
         }
         if let window = usage.sevenDay {
-            lines.append("Weekly limit: \(ClaudeFormat.percent(window.usedPercentage)) used. "
-                + ClaudeFormat.resetDescription(window.resetsAt, now: now) + ".")
+            lines.append(
+                "Weekly limit: \(ClaudeFormat.percent(window.usedPercentage)) used. "
+                    + ClaudeFormat.resetDescription(window.resetsAt, now: now) + ".")
         }
         lines.append("Claude Code usage, \(ClaudeFormat.updatedDescription(usage.updatedAt, now: now)).")
         return lines.joined(separator: "\n")
@@ -88,7 +90,8 @@ private struct UsageBarRow: View {
         }
         .frame(height: 12)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(label == "5h" ? "5-hour" : "Weekly") usage \(ClaudeFormat.percent(window.usedPercentage))")
+        .accessibilityLabel(
+            "\(label == "5h" ? "5-hour" : "Weekly") usage \(ClaudeFormat.percent(window.usedPercentage))")
     }
 
     private var trailingText: String {

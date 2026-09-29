@@ -41,8 +41,6 @@ var targets: [Target] = [
             name: "SuperNotch",
             dependencies: ["SuperNotchCore"],
             path: "Sources/SuperNotch",
-            // Non-Swift files inside the target folder (otherwise SwiftPM warns about unhandled files).
-            exclude: ["Claude/CORE_REQUESTS.md"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .defaultIsolation(MainActor.self),
