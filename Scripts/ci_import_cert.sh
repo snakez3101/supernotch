@@ -103,7 +103,7 @@ canary() {
     rm -f "$f"
     return 1
   fi
-  dr=$(codesign -d -r- "$f" 2>&1 | sed -n 's/^designated => //p')
+  dr=$(codesign -d -r- "$f" 2>&1 | sed -nE 's/^(# )?designated => //p')  # "# " = implicit requirement
   rm -f "$f"
   echo "canary designated requirement: $dr"
   [[ $dr == *"certificate leaf"* || $dr == *"anchor"* ]]

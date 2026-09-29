@@ -219,7 +219,9 @@ codesign "${codesign_args[@]}" --entitlements Resources/SuperNotch.entitlements 
 
 step "Verifying signature"
 codesign --verify --strict --deep --verbose=2 "$APP"
-DESIGNATED=$(codesign -d -r- "$APP" 2>&1 | sed -n 's/^designated => //p')
+# codesign prints "# designated => …" for an implicit (generated) requirement, which is what ad-hoc and
+# certificate signatures without an explicit -r get.
+DESIGNATED=$(codesign -d -r- "$APP" 2>&1 | sed -nE 's/^(# )?designated => //p')
 info "designated requirement: ${DESIGNATED:-unknown}"
 if [[ $IDENTITY == "-" ]]; then
   info "ad-hoc signature: the requirement is a cdhash, so Automation/Accessibility grants reset on every update."
