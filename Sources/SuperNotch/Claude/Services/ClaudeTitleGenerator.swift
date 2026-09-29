@@ -25,19 +25,24 @@ nonisolated enum ClaudeTitleText {
 
     /// Cleans Haiku's reply into a display title (nil if unusable).
     static func sanitize(_ output: String) -> String? {
+        let wrappers = CharacterSet(charactersIn: "\"'`*#_“”‘’.:- ")
         guard
             var line = output.split(whereSeparator: \.isNewline).map({
                 $0.trimmingCharacters(in: .whitespaces)
             }).first(where: { !$0.isEmpty })
         else { return nil }
-        for prefix in ["Title:", "title:", "TITLE:"] where line.hasPrefix(prefix) {
-            line = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+        line = line.trimmingCharacters(in: wrappers)
+        for prefix in ["title:", "session title:", "task:"] where line.lowercased().hasPrefix(prefix) {
+            line = String(line.dropFirst(prefix.count))
         }
-        line = line.trimmingCharacters(in: CharacterSet(charactersIn: "\"'`*#_“”‘’.:- "))
+        line = line.trimmingCharacters(in: wrappers)
         guard !line.isEmpty, line.count <= 80 else { return nil }
         let lowered = line.lowercased()
-        let refusals = ["i can't", "i cannot", "i'm sorry", "sorry", "as an ai", "error:", "i need more"]
-        if refusals.contains(where: { lowered.hasPrefix($0) }) { return nil }
+        let refusals = [
+            "i can't", "i cannot", "i'm sorry", "i am sorry", "sorry", "as an ai", "error", "i need more",
+            "usage limit", "rate limit", "not logged in", "please run", "invalid api key", "credit balance",
+        ]
+        if refusals.contains(where: { lowered.hasPrefix($0) }) || lowered.contains("api error") { return nil }
         let short = TitleResolver.shorten(line)
         return short.isEmpty ? nil : short
     }

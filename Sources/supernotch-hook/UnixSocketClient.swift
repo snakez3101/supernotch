@@ -1,4 +1,5 @@
-// Owner: claude-core. Minimal blocking Unix-domain stream socket client (Darwin + Glibc).
+// Owner: claude-core. Minimal Unix-domain stream socket client for the hook (Darwin + Glibc).
+// Every operation has a deadline; every failure returns nil/false so the caller can fail open.
 
 import Foundation
 
@@ -11,8 +12,18 @@ import Foundation
 final class UnixSocketClient {
     private var fd: Int32
 
-    /// Connects or returns nil (missing socket, refused, path too long).
-    init?(path: String) {
+    private init(fd: Int32) { self.fd = fd }
+
+    deinit { close() }
+
+    /// Connects within `timeout` or returns nil (missing socket, socket owned by another user, refused,
+    /// backlog full, path too long).
+    static func connect(path: String, timeout: TimeInterval) -> UnixSocketClient? {
+        // Only talk to a socket file owned by us: in a shared directory another user could pre-create it and
+        // answer our permission requests.
+        var info = stat()
+        guard stat(path, &info) == 0, info.st_uid == getuid() else { return nil }
+
         #if canImport(Darwin)
             let type = SOCK_STREAM
         #else
@@ -20,21 +31,20 @@ final class UnixSocketClient {
         #endif
         let descriptor = socket(AF_UNIX, type, 0)
         guard descriptor >= 0 else { return nil }
-        fd = descriptor
+        let client = UnixSocketClient(fd: descriptor)
 
         #if canImport(Darwin)
             var one: Int32 = 1
-            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+            _ = setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
         #endif
+        let flags = fcntl(descriptor, F_GETFL)
+        guard flags >= 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else { return nil }
 
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         let bytes = Array(path.utf8)
         let capacity = MemoryLayout.size(ofValue: address.sun_path)
-        guard bytes.count < capacity else {
-            Darwin_close(fd)
-            return nil
-        }
+        guard !bytes.isEmpty, bytes.count < capacity else { return nil }
         withUnsafeMutableBytes(of: &address.sun_path) { buffer in
             for (index, byte) in bytes.enumerated() { buffer[index] = byte }
             buffer[bytes.count] = 0
@@ -43,59 +53,81 @@ final class UnixSocketClient {
             address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
         #endif
         let length = socklen_t(MemoryLayout<sockaddr_un>.size)
-        let result = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, length) }
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            let result = withUnsafePointer(to: &address) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { Glue.connect(descriptor, $0, length) }
+            }
+            if result == 0 { break }
+            let error = errno
+            if error == EINTR { continue }
+            if error == EINPROGRESS {
+                guard client.wait(for: Int16(POLLOUT), until: deadline) else { return nil }
+                var socketError: Int32 = 0
+                var size = socklen_t(MemoryLayout<Int32>.size)
+                guard getsockopt(descriptor, SOL_SOCKET, SO_ERROR, &socketError, &size) == 0, socketError == 0 else {
+                    return nil
+                }
+                break
+            }
+            // EAGAIN: the listener's backlog is full (app busy). Retry briefly within the budget.
+            guard error == EAGAIN, deadline.timeIntervalSinceNow > 0.01 else { return nil }
+            usleep(5_000)
         }
-        guard result == 0 else {
-            Darwin_close(fd)
-            return nil
-        }
+
+        #if canImport(Darwin)
+            var peerUID: uid_t = 0
+            var peerGID: gid_t = 0
+            guard getpeereid(descriptor, &peerUID, &peerGID) == 0, peerUID == getuid() else { return nil }
+        #endif
+        return client
     }
 
     func close() {
         if fd >= 0 {
-            Darwin_close(fd)
+            _ = Glue.close(fd)
             fd = -1
         }
     }
 
-    deinit { close() }
-
     /// Writes all bytes; false on error or timeout.
     func writeAll(_ data: Data, timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
-        var offset = 0
         let bytes = [UInt8](data)
+        var offset = 0
         while offset < bytes.count {
-            guard wait(for: Int16(POLLOUT), until: deadline) else { return false }
-            let written = bytes[offset...].withUnsafeBytes { buffer in
-                write(fd, buffer.baseAddress, buffer.count)
+            let written = bytes[offset...].withUnsafeBytes { buffer in Glue.send(fd, buffer.baseAddress, buffer.count) }
+            if written > 0 {
+                offset += written
+                continue
             }
-            if written < 0 {
-                if errno == EINTR || errno == EAGAIN { continue }
-                return false
-            }
-            offset += written
+            let error = errno
+            if written < 0 && error == EINTR { continue }
+            guard written < 0, error == EAGAIN, wait(for: Int16(POLLOUT), until: deadline) else { return false }
         }
         return true
     }
 
-    /// Reads until the first `\n` (returned without it). nil on EOF, error or timeout.
-    func readLine(timeout: TimeInterval) -> Data? {
+    /// Reads until the first `\n` (returned without it). nil on EOF, error, timeout or an oversized line.
+    func readLine(timeout: TimeInterval, maxBytes: Int) -> Data? {
         let deadline = Date().addingTimeInterval(timeout)
         var collected = Data()
         var chunk = [UInt8](repeating: 0, count: 4096)
         while true {
             if let newline = collected.firstIndex(of: 0x0A) {
-                return collected[collected.startIndex..<newline]
+                return Data(collected[collected.startIndex..<newline])
             }
-            guard collected.count <= IPCLimits.maxReplyBytes, wait(for: Int16(POLLIN), until: deadline) else {
-                return nil
+            guard collected.count <= maxBytes else { return nil }
+            let count = chunk.withUnsafeMutableBytes { Glue.read(fd, $0.baseAddress, $0.count) }
+            if count > 0 {
+                collected.append(contentsOf: chunk[0..<count])
+                continue
             }
-            let count = chunk.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
-            if count < 0 && errno == EINTR { continue }
-            guard count > 0 else { return nil }
-            collected.append(contentsOf: chunk[0..<count])
+            if count == 0 { return nil }  // EOF: the app closed without answering ⇒ passthrough
+            let error = errno
+            if error == EINTR { continue }
+            guard error == EAGAIN, wait(for: Int16(POLLIN), until: deadline) else { return nil }
         }
     }
 
@@ -104,26 +136,58 @@ final class UnixSocketClient {
             let remaining = deadline.timeIntervalSinceNow
             if remaining <= 0 { return false }
             var descriptor = pollfd(fd: fd, events: events, revents: 0)
-            let millis = Int32(min(remaining * 1000, Double(Int32.max)))
+            let millis = Int32(min(remaining * 1000, 60_000))
             let result = poll(&descriptor, 1, max(millis, 1))
             if result < 0 && errno == EINTR { continue }
-            guard result > 0 else { return false }
-            if descriptor.revents & Int16(POLLERR | POLLNVAL) != 0 { return false }
-            // POLLHUP with pending data still allows a read that returns the data, then 0.
+            if result < 0 { return false }
+            if result == 0 { continue }  // re-check the deadline (long waits are split into 60 s slices)
+            if descriptor.revents & Int16(POLLNVAL) != 0 { return false }
+            // POLLERR / POLLHUP: let the next read/send report it (a reply may still be buffered).
             return true
         }
     }
 }
 
-enum IPCLimits {
-    static let maxReplyBytes = 1 * 1024 * 1024
-}
+/// libc calls whose names are shadowed inside `UnixSocketClient` (its `close()` method) or need per-platform
+/// flags.
+enum Glue {
+    static func close(_ fd: Int32) -> Int32 {
+        #if canImport(Darwin)
+            return Darwin.close(fd)
+        #else
+            return Glibc.close(fd)
+        #endif
+    }
 
-/// `close` is shadowed by the method name inside the class.
-@inline(__always) private func Darwin_close(_ fd: Int32) {
-    #if canImport(Darwin)
-        _ = Darwin.close(fd)
-    #else
-        _ = Glibc.close(fd)
-    #endif
+    static func read(_ fd: Int32, _ buffer: UnsafeMutableRawPointer?, _ count: Int) -> Int {
+        #if canImport(Darwin)
+            return Darwin.read(fd, buffer, count)
+        #else
+            return Glibc.read(fd, buffer, count)
+        #endif
+    }
+
+    static func send(_ fd: Int32, _ buffer: UnsafeRawPointer?, _ count: Int) -> Int {
+        #if canImport(Darwin)
+            return Darwin.send(fd, buffer, count, 0)  // SO_NOSIGPIPE is set on the socket
+        #else
+            return Glibc.send(fd, buffer, count, Int32(MSG_NOSIGNAL))
+        #endif
+    }
+
+    static func connect(_ fd: Int32, _ address: UnsafePointer<sockaddr>, _ length: socklen_t) -> Int32 {
+        #if canImport(Darwin)
+            return Darwin.connect(fd, address, length)
+        #else
+            return Glibc.connect(fd, address, length)
+        #endif
+    }
+
+    static func write(_ fd: Int32, _ buffer: UnsafeRawPointer?, _ count: Int) -> Int {
+        #if canImport(Darwin)
+            return Darwin.write(fd, buffer, count)
+        #else
+            return Glibc.write(fd, buffer, count)
+        #endif
+    }
 }

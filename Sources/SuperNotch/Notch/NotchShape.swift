@@ -11,7 +11,8 @@
 import SuperNotchCore
 import SwiftUI
 
-struct NotchShape: Shape {
+/// `nonisolated`: SwiftUI may evaluate shape paths off the main actor; the app target defaults to MainActor.
+nonisolated struct NotchShape: Shape {
     var topCornerRadius: CGFloat
     var bottomCornerRadius: CGFloat
 
@@ -77,7 +78,7 @@ extension NotchShape {
 }
 
 /// The three visual families of `NotchPresentation` (payload-free, for radii and styling).
-enum NotchPresentationKind: Hashable {
+nonisolated enum NotchPresentationKind: Hashable, Sendable {
     case closed
     case peek
     case expanded

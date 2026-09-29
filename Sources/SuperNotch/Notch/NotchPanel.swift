@@ -19,7 +19,7 @@ final class NotchPanel: NSPanel {
     var allowsKeyFocus: () -> Bool = { false }
     /// Key status changed (`true` = became key).
     var onKeyStatusChange: ((Bool) -> Void)?
-    /// Esc reached the window (no focused control handled it).
+    /// Esc reached the window (no focused control handled it): collapse the notch.
     var onCancel: (() -> Void)?
 
     override init(
@@ -66,13 +66,16 @@ final class NotchPanel: NSPanel {
         onKeyStatusChange?(false)
     }
 
-    override func cancelOperation(_ sender: Any?) {
-        if let onCancel {
+    /// Esc that no focused control handled (e.g. the permission card handles its own Esc = Deny first).
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == Self.escapeKeyCode, let onCancel {
             onCancel()
         } else {
-            super.cancelOperation(sender)
+            super.keyDown(with: event)
         }
     }
+
+    private static let escapeKeyCode: UInt16 = 53
 }
 
 final class NotchHostingView<Content: View>: NSHostingView<Content> {

@@ -207,6 +207,12 @@ public struct HookContext: Codable, Sendable, Hashable {
             isRemote: Self.isTruthy(value("CLAUDE_CODE_REMOTE")),
             hostAppPath: Self.appBundlePath(in: value("VSCODE_GIT_ASKPASS_NODE") ?? value("VSCODE_GIT_ASKPASS_MAIN"))
         )
+        // Undocumented but exported by current Claude Code to hooks; the process walk overrides both.
+        if let execPath = value("CLAUDE_CODE_EXECPATH"), execPath.hasPrefix("/") {
+            claudeExecutablePath = execPath
+            claudeInvocation = [execPath]
+        }
+        if let pid = value("CLAUDE_PID").flatMap({ Int32($0) }), pid > 1 { claudePID = pid }
     }
 
     /// "/Applications/Cursor.app/Contents/Frameworks/…" → "/Applications/Cursor.app" (outermost bundle).

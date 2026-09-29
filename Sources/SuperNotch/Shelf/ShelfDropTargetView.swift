@@ -59,7 +59,8 @@ final class ShelfDropTargetNSView: NSView {
         guard accepts(sender), let shelf else { return false }
         let zone = zone(for: sender)
         let accepted = shelf.acceptDrop(from: sender.draggingPasteboard, zone: zone)
-        Log.shelf.info("Drop on \(zone.rawValue, privacy: .public): \(accepted ? "accepted" : "nothing usable", privacy: .public)")
+        let outcome = accepted ? "accepted" : "nothing usable"
+        Log.shelf.info("Drop on \(zone.rawValue, privacy: .public): \(outcome, privacy: .public)")
         return accepted
     }
 

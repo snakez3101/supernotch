@@ -429,8 +429,8 @@ final class ShelfModel {
         }
 
         // No files: links, text, raw images.
-        let webURL = (pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL])?
-            .first { !$0.isFileURL }
+        let droppedURLs = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
+        let webURL = droppedURLs.first { !$0.isFileURL }
         let string = pasteboard.string(forType: .string)
         let imageData = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff)
         let imageName = pasteboard.data(forType: .png) != nil ? "Image.png" : "Image.tiff"
@@ -469,7 +469,8 @@ final class ShelfModel {
     /// Quick Look thumbnail, falling back to the Finder icon. Also remembered for drag images.
     func thumbnail(for item: ShelfItem, pointSize: CGFloat, scale: CGFloat) async -> NSImage? {
         guard let url = fileURL(for: item) else { return nil }
-        let image = await thumbnails.thumbnail(for: url, pointSize: pointSize, scale: scale) ?? fallbackIcon(for: item)
+        let generated = await thumbnails.thumbnail(for: url, pointSize: pointSize, scale: scale)
+        let image = generated ?? fallbackIcon(for: item)
         dragImages[item.id] = image
         return image
     }
@@ -524,8 +525,8 @@ final class ShelfModel {
     private func scheduleCleanup() {
         cleanupTimer?.invalidate()
         cleanupTimer = nil
-        guard isStarted, hasLoaded,
-            let delay = RetentionPolicy.nextCleanupDelay(items, period: settingsStore.settings.retention, now: Date())
+        let period = settingsStore.settings.retention
+        guard isStarted, hasLoaded, let delay = RetentionPolicy.nextCleanupDelay(items, period: period, now: Date())
         else { return }
         let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.applyRetention() }
@@ -612,7 +613,8 @@ final class ShelfModel {
                 }
             }
             if let first = failures.first {
-                self.showStatus(failures.count == 1 ? "Couldn't add \(first)" : "Couldn't add \(failures.count) files")
+                let message = failures.count == 1 ? "Couldn't add \(first)" : "Couldn't add \(failures.count) files"
+                self.showStatus(message)
             }
         }
     }

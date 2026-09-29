@@ -4,6 +4,7 @@
 // `AppSettings.launchAtLogin` only mirrors the user's wish. Registration works best from /Applications.
 import Foundation
 import ServiceManagement
+import os
 
 enum NotchLoginItem {
     enum State: Equatable {
@@ -28,6 +29,8 @@ enum NotchLoginItem {
     /// Registers or unregisters the app. Returns a user-facing error message on failure.
     @discardableResult
     static func setEnabled(_ enabled: Bool) -> String? {
+        // Never touch the real login items from the CI smoke test.
+        guard ProcessInfo.processInfo.environment[SmokeTest.environmentFlag] != "1" else { return nil }
         do {
             if enabled {
                 try SMAppService.mainApp.register()

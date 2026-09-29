@@ -581,7 +581,7 @@ final class ClaudeSessionsModel {
 
     /// Removes our entries from the primary and every extra config folder; restores the user's statusLine.
     func uninstallHooks() {
-        guard !isHookOperationRunning else { return }
+        guard !isHookOperationRunning, !Self.isSmokeTest else { return }
         let installer = self.installer
         let primary = installer.primaryTarget(configDirectory: configDirectory)
         let extras = installedExtraDirectories.map { installer.secondaryTarget(configDirectory: $0) }
@@ -630,7 +630,7 @@ final class ClaudeSessionsModel {
     }
 
     private func runHookOperation(target: ClaudeHookInstallTarget, install: Bool) {
-        guard !isHookOperationRunning else { return }
+        guard !isHookOperationRunning, !Self.isSmokeTest else { return }
         isHookOperationRunning = true
         hookMessage = nil
         let installer = self.installer
@@ -670,18 +670,21 @@ final class ClaudeSessionsModel {
         let hint = executableHint
         let home = paths.homeDirectory
         let sources = syncBinary ? Self.hookSourceCandidates() : []
+        // Smoke test (SPEC §D.10): no `claude` spawns, no writes outside the temp config folder.
+        let resolveCLI = !Self.isSmokeTest
         Task { [weak self] in
             let result = await Task.detached(priority: .utility) {
                 ClaudeHookOperations.setup(
                     installer: installer, primary: primary, extras: extras, wrapStatusLine: wrap,
-                    executableHint: hint, homeDirectory: home, hookSources: sources, allowRepair: allowRepair)
+                    executableHint: hint, homeDirectory: home, hookSources: sources, allowRepair: allowRepair,
+                    resolveCLI: resolveCLI)
             }.value
             guard let self, generation == self.setupGeneration else { return }
             self.hookStatus = result.status
             self.extraConfigStatuses = result.extraStatuses
             self.hookPreview = result.preview
             self.claudeVersionText = result.version
-            self.isClaudeCLIFound = result.executablePath != nil
+            self.isClaudeCLIFound = result.executablePath != nil || Self.isSmokeTest
             if let message = result.message { self.hookMessage = message }
         }
     }
@@ -783,7 +786,7 @@ nonisolated enum ClaudeHookOperations {
     static func setup(
         installer: ClaudeHookInstaller, primary: ClaudeHookInstallTarget, extras: [ClaudeHookInstallTarget],
         wrapStatusLine: Bool, executableHint: String?, homeDirectory: String, hookSources: [String],
-        allowRepair: Bool
+        allowRepair: Bool, resolveCLI: Bool
     ) -> ClaudeSetupResult {
         var message: String?
         if !hookSources.isEmpty {
@@ -798,7 +801,10 @@ nonisolated enum ClaudeHookOperations {
                 break
             }
         }
-        let cli = claudeVersion(executableHint: executableHint, homeDirectory: homeDirectory)
+        let cli =
+            resolveCLI
+            ? claudeVersion(executableHint: executableHint, homeDirectory: homeDirectory)
+            : (executable: nil, version: nil)
         let spec = installer.spec(for: primary, claudeVersion: cli.version, wrapStatusLine: wrapStatusLine)
         var status = installer.status(of: primary, spec: spec)
         if allowRepair, case .needsRepair = status, installer.hasManifest(for: primary) {

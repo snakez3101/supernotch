@@ -231,7 +231,8 @@ enum ShelfContextMenu {
             })
         }
         menu.addItem(.separator())
-        menu.addItem(ShelfMenuAction.item("Copy" + suffix, symbol: "doc.on.doc") { shelf.copyToPasteboard(ids: targets) })
+        menu.addItem(
+            ShelfMenuAction.item("Copy" + suffix, symbol: "doc.on.doc") { shelf.copyToPasteboard(ids: targets) })
         if shelf.isAirDropAvailable {
             menu.addItem(
                 ShelfMenuAction.item("AirDrop" + suffix, symbol: "dot.radiowaves.left.and.right") {

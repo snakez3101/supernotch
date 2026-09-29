@@ -203,8 +203,12 @@ nonisolated enum ClaudeProcessRunner {
             finished = true
             let output = Output(status: status, stdout: data, timedOut: timedOut)
             lock.unlock()
-            reader.readabilityHandler = nil
-            try? reader.close()
+            // Never touch the handle from inside its own readability callback (finish can run there):
+            // detach the handler from another queue. The pipe closes when Process and Pipe are released.
+            let reader = self.reader
+            DispatchQueue.global(qos: .utility).async {
+                reader.readabilityHandler = nil
+            }
             completion(output)
         }
     }

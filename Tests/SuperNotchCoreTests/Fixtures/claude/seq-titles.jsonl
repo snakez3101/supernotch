@@ -1,0 +1,33 @@
+# Title order and the Haiku policy: generate only when Claude Code produced no title after its first turn (or 30 s),
+# confirmed by a transcript read.
+{"t": 0, "hook": {"session_id": "S1", "transcript_path": "/Users/me/.claude/projects/-Users-me-billing/S1.jsonl", "cwd": "/Users/me/billing", "permission_mode": "default", "hook_event_name": "SessionStart", "source": "startup"}}
+{"t": 1, "hook": {"session_id": "S1", "transcript_path": "/Users/me/.claude/projects/-Users-me-billing/S1.jsonl", "cwd": "/Users/me/billing", "permission_mode": "default", "hook_event_name": "UserPromptSubmit", "prompt": "can you refactor the payment retry logic in the billing service"}, "expect": {"title": {"S1": "Refactor the payment retry…"}, "noEffects": ["titleGenerationNeeded:S1"]}}
+{"t": 1.2, "transcript": "S1", "signals": {}, "expect": {"noEffects": ["titleGenerationNeeded:S1"]}}
+{"t": 20, "hook": {"session_id": "S1", "transcript_path": "/Users/me/.claude/projects/-Users-me-billing/S1.jsonl", "cwd": "/Users/me/billing", "permission_mode": "default", "hook_event_name": "Stop", "last_assistant_message": "Refactored."}, "expect": {"effects": ["transcriptRefreshNeeded:S1"], "noEffects": ["titleGenerationNeeded:S1"]}}
+{"t": 20.3, "transcript": "S1", "signals": {}, "expect": {"effects": ["titleGenerationNeeded:S1"]}}
+{"t": 21, "transcript": "S1", "signals": {}, "expect": {"noEffects": ["titleGenerationNeeded:S1"]}}
+{"t": 25, "title": "S1", "text": "Title: \"Billing retry refactor.\"", "expect": {"title": {"S1": "Billing retry refactor"}}}
+{"t": 40, "transcript": "S1", "signals": {"aiTitle": "Refactor payment retry logic"}, "expect": {"title": {"S1": "Refactor payment retry logic"}}}
+{"t": 41, "transcript": "S1", "signals": {"customTitle": "billing-work"}, "expect": {"title": {"S1": "billing-work"}}}
+# S2: a session_title from SessionStart means no Haiku call ever
+{"t": 50, "hook": {"session_id": "S2", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S2.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "SessionStart", "source": "startup", "session_title": "Release prep"}, "expect": {"title": {"S2": "Release prep"}}}
+{"t": 51, "hook": {"session_id": "S2", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S2.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "UserPromptSubmit", "prompt": "bump versions"}}
+{"t": 60, "hook": {"session_id": "S2", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S2.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "Stop", "last_assistant_message": "ok"}}
+{"t": 61, "transcript": "S2", "signals": {}, "expect": {"noEffects": ["titleGenerationNeeded:S2"], "title": {"S2": "Release prep"}}}
+{"t": 62, "statusline": {"session_id": "S2", "session_name": "Release prep v2", "model": {"display_name": "Opus"}}, "expect": {"title": {"S2": "Release prep v2"}}}
+{"t": 63, "statusline": {"session_id": "S2", "session_name": "app-4c"}, "expect": {"title": {"S2": "Release prep v2"}}}
+# S3: a long first turn: after 30 s ask for a transcript re-read, then generate
+{"t": 100, "hook": {"session_id": "S3", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S3.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "UserPromptSubmit", "prompt": "migrate the database schema to the new format"}}
+{"t": 131, "tick": true, "expect": {"effects": ["transcriptRefreshNeeded:S3"], "noEffects": ["titleGenerationNeeded:S3"]}}
+{"t": 132, "transcript": "S3", "signals": {}, "expect": {"effects": ["titleGenerationNeeded:S3"]}}
+# S4: the transcript cannot be read: generate anyway after another grace period
+{"t": 200, "hook": {"session_id": "S4", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S4.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "UserPromptSubmit", "prompt": "write docs"}}
+{"t": 231, "tick": true, "expect": {"effects": ["transcriptRefreshNeeded:S4"], "noEffects": ["titleGenerationNeeded:S4"]}}
+{"t": 262, "tick": true, "expect": {"effects": ["titleGenerationNeeded:S4"]}}
+# S5: a long native title is shortened locally (compression is opt-in)
+{"t": 300, "hook": {"session_id": "S5", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S5.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "UserPromptSubmit", "prompt": "why are the nightly tests flaky"}}
+{"t": 301, "transcript": "S5", "signals": {"aiTitle": "Investigate why the nightly integration tests are flaky on CI"}, "expect": {"title": {"S5": "Investigate why the nightly…"}}}
+{"t": 330, "hook": {"session_id": "S5", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S5.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "Stop", "last_assistant_message": "ok"}, "expect": {"noEffects": ["titleGenerationNeeded:S5"]}}
+# S6: a Haiku refusal is ignored; the first-prompt fallback stays
+{"t": 400, "hook": {"session_id": "S6", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S6.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "UserPromptSubmit", "prompt": "hey claude, please fix the flaky login test"}}
+{"t": 401, "title": "S6", "text": "I'm sorry, but I can't help with that.", "expect": {"title": {"S6": "Fix the flaky login…"}}}

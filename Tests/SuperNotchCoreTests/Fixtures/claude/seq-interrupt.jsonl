@@ -1,0 +1,18 @@
+# Esc does not fire Stop: the transcript's "[Request interrupted by user" marker ends the turn, but only when it
+# belongs to the current turn.
+{"t": 0, "hook": {"session_id": "S1", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S1.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "UserPromptSubmit", "prompt": "long task"}}
+{"t": 5, "transcript": "S1", "signals": {"interrupted": true, "interruptedAt": 4}, "expect": {"phase": {"S1": "done"}, "effects": ["phaseChanged:S1:working>done"]}}
+{"t": 10, "hook": {"session_id": "S1", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S1.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "UserPromptSubmit", "prompt": "next task"}, "expect": {"phase": {"S1": "working"}}}
+# A read racing the new prompt still sees the previous turn's marker (older timestamp)
+{"t": 10.5, "transcript": "S1", "signals": {"interrupted": true, "interruptedAt": 4}, "expect": {"phase": {"S1": "working"}}}
+# Without a timestamp, a marker read right after a prompt is ignored; later it counts
+{"t": 11, "transcript": "S1", "signals": {"interrupted": true}, "expect": {"phase": {"S1": "working"}}}
+{"t": 20, "transcript": "S1", "signals": {"interrupted": true}, "expect": {"phase": {"S1": "done"}}}
+# S2: Esc on an AskUserQuestion dialog
+{"t": 29, "hook": {"session_id": "S2", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S2.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "UserPromptSubmit", "prompt": "set things up"}}
+{"t": 30, "hook": {"session_id": "S2", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S2.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Which DB?", "header": "DB", "options": [{"label": "Postgres"}]}]}, "tool_use_id": "tu_q"}, "expect": {"phase": {"S2": "needsInput.question"}}}
+{"t": 31, "transcript": "S2", "signals": {"interrupted": true, "interruptedAt": 30.5}, "expect": {"phase": {"S2": "done"}}}
+# S3: Esc on a permission prompt whose hook connection stayed open
+{"t": 40, "hook": {"session_id": "S3", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S3.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "UserPromptSubmit", "prompt": "x"}}
+{"t": 41, "id": "r3", "hook": {"session_id": "S3", "transcript_path": "/Users/me/.claude/projects/-Users-me-app/S3.jsonl", "cwd": "/Users/me/app", "permission_mode": "default", "hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "git push"}}}
+{"t": 45, "transcript": "S3", "signals": {"interrupted": true, "interruptedAt": 44}, "expect": {"phase": {"S3": "done"}, "pending": [], "effects": ["replyPassthrough:r3"]}}

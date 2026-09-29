@@ -27,7 +27,7 @@ struct ShelfTileView: View {
         .frame(width: ShelfTileMetrics.tileWidth, height: ShelfTileMetrics.tileHeight)
         .background {
             RoundedRectangle(cornerRadius: DesignTokens.Radius.large, style: .continuous)
-                .fill(isSelected ? DesignTokens.Colors.selectedFill : (isHovering ? DesignTokens.Colors.hoverFill : .clear))
+                .fill(tileFill(isSelected: isSelected))
         }
         .overlay {
             if isSelected {
@@ -58,6 +58,11 @@ struct ShelfTileView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityText)
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
+    }
+
+    private func tileFill(isSelected: Bool) -> Color {
+        if isSelected { return DesignTokens.Colors.selectedFill }
+        return isHovering ? DesignTokens.Colors.hoverFill : .clear
     }
 
     private var tooltip: String {

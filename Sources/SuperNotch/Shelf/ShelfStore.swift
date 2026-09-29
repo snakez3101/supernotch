@@ -255,8 +255,9 @@ nonisolated final class ShelfStore: @unchecked Sendable {
 
     private func sweepSync(keeping items: [ShelfItem]) {
         let referenced = Set(
-            items.compactMap { item in item.storedRelativePath.flatMap { ShelfPathSafety.itemFolder(ofRelativePath: $0) } }
-        )
+            items.compactMap { item in
+                item.storedRelativePath.flatMap { ShelfPathSafety.itemFolder(ofRelativePath: $0) }
+            })
         if let names = try? fileManager.contentsOfDirectory(atPath: shelfDirectory.path) {
             for name in names where UUID(uuidString: name) != nil && !referenced.contains(name) {
                 try? fileManager.removeItem(at: shelfDirectory.appendingPathComponent(name, isDirectory: true))
